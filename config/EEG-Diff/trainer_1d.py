@@ -17,37 +17,20 @@ train_config = dict(
     # EEG-specific parameters
     prediction_point=640,   # Start prediction from 50% of signal
     num_train_timesteps=1000, #number of steps in evaluation... ################### Denoise
-    num_epochs=200,
+    num_epochs=10,
     max_train_steps=None,
-    train_batch_size=64,     # Adjust based on your GPU memory
-    eval_batch_size=64,
+    train_batch_size=32,     # Adjust based on your GPU memory
+    eval_batch_size=32,
 
     # Learning rate and scheduling
-    learning_rate=2e-4,
-    lr_warmup_steps=1000,
+    learning_rate=5e-5,
+    lr_warmup_steps=500,
     lr_scheduler="cosine",
-    weight_decay=0.01,           # Reduced regularization to allow fitting
 
     # Evaluation and saving
-    eval_begin=1000,          # Start evaluation after this many iterations
-    eval_interval=500,       # Evaluate every 20 iterations
+    eval_begin=200,          # Start evaluation after this many iterations
+    eval_interval=200,       # Evaluate every 20 iterations
     save_interval=1000,
-    
-    # Minimal augmentation to focus on fitting
-    noise_augmentation=0.01,      # Very light augmentation
-    
-    # Gradient optimization
-    gradient_clip_norm=1.0,       # Higher clip for stronger updates
-    accumulate_grad_batches=2,    # Simulate larger effective batch size
-    
-    # Loss-specific optimizations
-    loss_weighting="snr",         # Signal-to-noise ratio weighting
-    prediction_type="epsilon", # Often better than epsilon prediction
-    offset_noise=0.05,            # Add offset noise for better training
-    
-    # EMA for smoother convergence
-    ema_decay=0.995,
-    use_ema_for_eval=True,
     
     # Add paths to label files for seizure/non-seizure classification
     train_labels_path="C:/Github/EEG-Mouse/data/train_labels.csv",
@@ -57,11 +40,10 @@ train_config = dict(
 # OPTIMIZER OPTIMIZED FOR LOW LOSS
 optimizer_config = dict(
     type="AdamW",
-    learning_rate=1e-4,       # Higher LR to escape loss plateau
+    learning_rate=5e-5,       # Higher LR to escape loss plateau
     weight_decay=0.01,       # Reduced for better fitting
-    betas=(0.9, 0.99),        # Higher beta2 for smoother updates
+    betas=(0.9, 0.999),        # Higher beta2 for smoother updates
     eps=1e-8,                 # Smaller eps for more precise updates
-    amsgrad=False,             # Use AMSGrad variant for better convergence
 )
 project_name = "EEG-DIF-1D"
 
