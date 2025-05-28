@@ -16,34 +16,35 @@ train_config = dict(
 
     # EEG-specific parameters
     prediction_point=640,   # Start prediction from 50% of signal
-    num_train_timesteps=1000, #number of steps in evaluation... ################### Denoise
-    num_epochs=10,
-    max_train_steps=None,
-    train_batch_size=32,     # Adjust based on your GPU memory
+    num_train_timesteps=500, #number of steps in evaluation...
+    num_epochs=3,
+    max_train_steps=1000,
+    train_batch_size=16,     # Adjust based on your GPU memory
     eval_batch_size=32,
-
-    # Learning rate and scheduling
-    learning_rate=5e-5,
-    lr_warmup_steps=500,
-    lr_scheduler="cosine",
-
-    # Evaluation and saving
-    eval_begin=200,          # Start evaluation after this many iterations
-    eval_interval=200,       # Evaluate every 20 iterations
-    save_interval=1000,
+    learning_rate=2e-5,
+    lr_warmup_steps=25,
+    early_stopping_patience=3,    # Stop after 3 non-improving evals
+    min_improvement=0.001,         # Minimum improvement threshold
+    eval_begin=10,          # Start evaluation after this many iterations
+    eval_interval=25,       # Evaluate every 20 iterations
     
     # Add paths to label files for seizure/non-seizure classification
     train_labels_path="C:/Github/EEG-Mouse/data/train_labels.csv",
     test_labels_path="C:/Github/EEG-Mouse/data/test_labels.csv",
+    
+
 )
+
 
 # OPTIMIZER OPTIMIZED FOR LOW LOSS
 optimizer_config = dict(
     type="AdamW",
-    learning_rate=5e-5,       # Higher LR to escape loss plateau
-    weight_decay=0.01,       # Reduced for better fitting
+    learning_rate=2e-5,       # Higher LR to escape loss plateau
+    weight_decay=0.2,       # Reduced for better fitting
     betas=(0.9, 0.999),        # Higher beta2 for smoother updates
     eps=1e-8,                 # Smaller eps for more precise updates
+    clip_sample=False,
+    beta_end=0.008,            # Was 0.01 - less aggressive
 )
 project_name = "EEG-DIF-1D"
 
@@ -59,12 +60,14 @@ trainner = dict(
 # WANDB LOGGING CONFIGURATION
 wandb_config = dict(
     learning_rate=optimizer_config['learning_rate'],
-    architecture="1D EEG Diffusion Model",
-    dataset="EEG-DIF-1D",
+    architecture="Ultra-Small 1D EEG Diffusion Model",
+    dataset="EEG-DIF-1D-Anti-Overfit",
     epochs=train_config['num_epochs'],
     batch_size=train_config['train_batch_size'],
-    noise_schedule="cosine",
-    prediction_point=train_config['prediction_point'],
-    notes="Optimized parameters for EEG signal generation"
+    model_size="ultra_small",
+    regularization="extreme_weight_decay_0.2",
+    timesteps=train_config['num_train_timesteps'],
+    early_stopping=True,
+    notes="Extreme anti-overfitting measures: ultra-small model, high weight decay, early stopping"
 )
 

@@ -48,6 +48,40 @@ class EEGDataset1D(Dataset):
             
         return (sequence,)
     
+    def apply_augmentation(self, sequence):
+        """
+        Apply various augmentation techniques suitable for EEG signals
+        """
+        # Choose random augmentation
+        aug_type = np.random.choice(['noise', 'scale', 'shift', 'smooth'])
+        
+        if aug_type == 'noise':
+            # Add small amount of gaussian noise
+            noise_level = 0.01
+            noise = np.random.normal(0, noise_level, sequence.shape)
+            sequence = sequence + noise
+            
+        elif aug_type == 'scale':
+            # Scale amplitude slightly
+            scale_factor = np.random.uniform(0.9, 1.1)
+            sequence = sequence * scale_factor
+            
+        elif aug_type == 'shift':
+            # Small time shift (circular shift)
+            shift_amount = np.random.randint(-10, 11)
+            sequence = np.roll(sequence, shift_amount)
+            
+        elif aug_type == 'smooth':
+            # Apply light smoothing
+            kernel_size = 3
+            kernel = np.ones(kernel_size) / kernel_size
+            sequence = np.convolve(sequence, kernel, mode='same')
+        
+        # Ensure values stay in normalized range
+        sequence = np.clip(sequence, 0, 1)
+        
+        return sequence
+    
     def normalize_with_min_max(self, data):
         max_values = np.max(data)
         min_values = np.min(data)

@@ -59,14 +59,26 @@ class DDIMPipeline1D(DiffusionPipeline):
                 f" size of {batch_size}. Make sure the batch size matches the length of the generators."
             )
 
-        # Update this part with scaled noise
-        noise_scale = 1  # Use same value as in training
-        signal = noise_scale * randn_tensor(signal_shape, generator=generator, 
-                                        device=self.device, dtype=self.unet.dtype)
-        signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
+        # # Update this part with scaled noise
+        # noise_scale = 1  # Use same value as in training
+        # signal = noise_scale * randn_tensor(signal_shape, generator=generator, 
+        #                                 device=self.device, dtype=self.unet.dtype)
+        # signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
+        
+        # FIXED: Generate noise that matches original signal characteristics
+        original_mean = initial_signal[:, :, :prediction_point].mean()
+        original_std = initial_signal[:, :, :prediction_point].std()
 
+        noise = randn_tensor(signal_shape, generator=generator, device=self.device, dtype=self.unet.dtype)
+        # Scale noise to match original signal statistics
+        noise = noise * (original_std * 0.1) + original_mean  # 10% of original std
+
+        signal = noise.clone()
+        signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
+        
         # Set step values
         self.scheduler.set_timesteps(num_inference_steps)
+
 
         for t in self.progress_bar(self.scheduler.timesteps):
             # 1. Predict noise model_output
@@ -80,9 +92,38 @@ class DDIMPipeline1D(DiffusionPipeline):
             ).prev_sample
             signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
 
-        # Normalize signal
-        signal = (signal / 2 + 0.5).clamp(0, 1)
+            # ADD THIS CRITICAL BOUNDARY SMOOTHING CODE:
+            transition_width = 10
+            if prediction_point + transition_width < signal.shape[-1]:
+                transition_weights = torch.linspace(0, 1, transition_width).to(signal.device)
+                last_original_value = initial_signal[:, :, prediction_point-1:prediction_point]
+
+                for i in range(transition_width):
+                    weight = transition_weights[i]
+                    signal[:, :, prediction_point + i] = (
+                        (1 - weight) * last_original_value.squeeze(-1) +
+                        weight * signal[:, :, prediction_point + i]
+                    )
+    
+
         
+        # # Normalize signal
+        # signal = (signal / 2 + 0.5).clamp(0, 1)
+        
+        # CRITICAL FIX: Don't force normalize to [0,1] - preserve original signal characteristics
+        # Instead, clamp to reasonable range based on original signal
+        signal_min = initial_signal.min()
+        signal_max = initial_signal.max()
+
+        # Only clamp the predicted part, keep original part unchanged
+        predicted_part = signal[:, :, prediction_point:]
+        predicted_part = torch.clamp(predicted_part, signal_min * 1.2, signal_max * 1.2)  # Allow 20% extension
+        signal[:, :, prediction_point:] = predicted_part
+
+        # Original part stays exactly the same
+        signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
+
+
         if not return_dict:
             return (signal,)
 
@@ -122,9 +163,14 @@ class DDIMPipeline1D(DiffusionPipeline):
         # Instead of just cloning, start with random noise like in __call__
 
 
-        noise_scale = 1  # Use same value as in training
-        signal = noise_scale * randn_tensor(initial_signal.shape, generator=generator, 
-                                      device=self.device, dtype=self.unet.dtype)
+        original_mean = initial_signal[:, :, :prediction_point].mean()
+        original_std = initial_signal[:, :, :prediction_point].std()
+
+        noise = randn_tensor(initial_signal.shape, generator=generator, 
+                    device=self.device, dtype=self.unet.dtype)
+        noise = noise * (original_std * 0.1) + original_mean
+
+        signal = noise.clone()
         signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
 
         # Set step values
@@ -135,9 +181,39 @@ class DDIMPipeline1D(DiffusionPipeline):
             model_output = self.unet(signal, t).sample
 
             # 2. Predict previous mean of signal x_t-1 and add variance depending on eta
+            # signal = self.scheduler.step(
+            #     model_output, t, signal, eta=eta, use_clipped_model_output=use_clipped_model_output, generator=generator
+            # ).prev_sample
+            # signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
             signal = self.scheduler.step(
                 model_output, t, signal, eta=eta, use_clipped_model_output=use_clipped_model_output, generator=generator
             ).prev_sample
+
+            # Always preserve conditioning
             signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
+
+            # CRITICAL FIX: Add smooth transition at boundary
+            transition_width = 10
+            if prediction_point + transition_width < signal.shape[-1]:
+                transition_weights = torch.linspace(0, 1, transition_width).to(signal.device)
+                last_original_value = initial_signal[:, :, prediction_point-1:prediction_point]
+    
+                for i in range(transition_width):
+                    weight = transition_weights[i]
+                    signal[:, :, prediction_point + i] = (
+                        (1 - weight) * last_original_value.squeeze(-1) +
+                        weight * signal[:, :, prediction_point + i]
+                    )
+
+        # Preserve signal range like in __call__ method
+        signal_min = initial_signal.min()
+        signal_max = initial_signal.max()
+
+        predicted_part = signal[:, :, prediction_point:]
+        predicted_part = torch.clamp(predicted_part, signal_min * 1.2, signal_max * 1.2)
+        signal[:, :, prediction_point:] = predicted_part
+
+        # Ensure original part stays the same
+        signal[:, :, :prediction_point] = initial_signal[:, :, :prediction_point]
 
         return signal
