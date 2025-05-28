@@ -1,511 +1,3 @@
-# # import random
-# # import os
-# # import numpy as np
-# # import matplotlib.pyplot as plt
-# # import wandb
-# # import torch
-# # import torch.nn.functional as F
-# # from torch.utils.data import DataLoader
-# # from diffusers.optimization import get_cosine_schedule_with_warmup
-# # from mmengine import Config
-# # from ..registry import EEGDiffMR, EEGDiffDR
-# # from torchvision.transforms import Compose, Normalize
-# # from ..pipeline import DDIMPipeline1D
-
-# # @EEGDiffMR.register_module()
-# # class EEGDiffTrainner1D:
-# #     def __init__(self,
-# #                  trainner_config: Config,
-# #                  unet: Config,
-# #                  noise_scheduler: Config,
-# #                  optimizer: Config,
-# #                  train_dataset: Config,
-# #                  val_dataset: Config):
-# #         self.config = trainner_config
-# #         self.unet = EEGDiffMR.build(unet)
-# #         self.initial_unet()
-# #         self.noise_scheduler = EEGDiffMR.build(noise_scheduler)
-# #         self.pipeline = DDIMPipeline1D(unet=self.unet, scheduler=self.noise_scheduler)
-        
-# #         self.train_dataset = EEGDiffDR.build(train_dataset)
-# #         self.val_dataset = EEGDiffDR.build(val_dataset)
-
-# #         # Define a custom normalization function
-# #         def normalize_1d(tensor):
-# #             return (tensor - 0.5) / 0.5  # Equivalent to Normalize(mean=[0.5], std=[0.5])
-
-# #         # Apply normalization manually
-# #         self.train_dataset.transform = normalize_1d
-# #         self.val_dataset.transform = normalize_1d
-        
-# #         self.train_dataloader = DataLoader(
-# #             self.train_dataset, 
-# #             batch_size=self.config.train_batch_size, 
-# #             shuffle=True
-# #         )
-# #         self.val_dataloader = DataLoader(
-# #             self.val_dataset, 
-# #             batch_size=self.config.eval_batch_size, 
-# #             shuffle=True
-# #         )
-        
-# #         self.optimizer = torch.optim.Adam(
-# #             self.unet.parameters(), 
-# #             lr=optimizer.learning_rate
-# #         )
-# #         self.lr_scheduler = get_cosine_schedule_with_warmup(
-# #             optimizer=self.optimizer,
-# #             num_warmup_steps=self.config.lr_warmup_steps,
-# #             num_training_steps=(len(self.train_dataloader) * self.config.num_epochs),
-# #         )
-
-# #     def initial_unet(self):
-# #         self.unet.to(self.config.device)
-# #         if self.config.u_net_weight_path is not None:
-# #             self.unet.load_state_dict(torch.load(self.config.u_net_weight_path, map_location=self.config.device))
-# #             print(f"Load u_net weight from {self.config.u_net_weight_path}")
-# #         else:
-# #             print("No u_net weight path is provided, using random weights")
-
-# #     def evaluate(self, batch, epoch):
-# #         original_signal = batch[0].to(self.config.device)
-# #         father_path = f"{self.config.output_dir}/{epoch}"
-# #         if not os.path.exists(father_path):
-# #             os.makedirs(father_path)
-            
-# #         # Generate predicted signal
-# #         result = self.pipeline(
-# #             original_signal,
-# #             self.config.prediction_point,
-# #             batch_size=len(original_signal),
-# #             num_inference_steps=self.config.num_train_timesteps,
-# #         )
-        
-# #         # Extract the predicted signal
-# #         predicted_signal = result.images
-        
-# #         # Normalize original signal for comparison
-# #         original_signal = (original_signal / 2 + 0.5).clamp(0, 1)
-# #         original_signal_np = original_signal.cpu().numpy()
-        
-# #         # Calculate difference between original and predicted
-# #         diff = np.sum((original_signal_np - predicted_signal.cpu().numpy()) ** 2)
-# #         wandb.log({'signal diff': diff})
-
-# #         # Plot a random sample for visualization
-# #         index = np.random.randint(0, len(original_signal) - 1)
-        
-# #         # Plot predicted signal
-# #         plt.figure(figsize=(15, 5))
-# #         plt.plot(predicted_signal[index, 0, :])
-# #         plt.title('Predicted Signal')
-# #         plt.savefig(f"{father_path}/predicted_signal.png")
-# #         plt.close()
-        
-# #         # Plot original signal
-# #         plt.figure(figsize=(15, 5))
-# #         plt.plot(original_signal_np[index, 0, :])
-# #         plt.title('Original Signal')
-# #         plt.savefig(f"{father_path}/original_signal.png")
-# #         plt.close()
-        
-# #         # Plot comparison
-# #         plt.figure(figsize=(15, 5))
-# #         plt.plot(original_signal_np[index, 0, :], label='Original')
-# #         plt.plot(predicted_signal[index, 0, :], label='Predicted')
-# #         plt.axvline(x=self.config.prediction_point, color='r', linestyle='--', label='Prediction Point')
-# #         plt.legend()
-# #         plt.title('Original vs Predicted Signal')
-# #         plt.savefig(f"{father_path}/comparison.png")
-# #         plt.close()
-        
-# #         # Save model weights
-# #         torch.save(self.unet.state_dict(), f"{father_path}/unet.pth")
-
-# #     def train_single_batch(self, batch, epoch):
-# #         clean_signals = batch[0].to(self.config.device)
-        
-# #         # Generate noise
-# #         noise = torch.randn(clean_signals.shape).to(clean_signals.device)
-        
-# #         # Sample a random timestep for each example
-# #         timesteps = torch.randint(
-# #             0, 
-# #             self.noise_scheduler.num_train_timesteps,
-# #             (clean_signals.shape[0],),
-# #             device=clean_signals.device
-# #         ).long()
-        
-# #         # Add noise to signals
-# #         signals_with_noise = self.noise_scheduler.add_noise(clean_signals, noise, timesteps)
-        
-# #         # Keep the first part of the signal unchanged (conditioning)
-# #         signals_with_noise[:, :, :self.config.prediction_point] = clean_signals[:, :, :self.config.prediction_point]
-        
-# #         # Predict the noise residual
-# #         noise_pred = self.unet(signals_with_noise, timesteps, return_dict=False)[0]
-        
-# #         # Compute loss only on the predicted part
-# #         loss = F.mse_loss(
-# #             noise_pred[:, :, self.config.prediction_point:],
-# #             noise[:, :, self.config.prediction_point:]
-# #         )
-        
-# #         # Backpropagate
-# #         loss.backward()
-# #         self.optimizer.step()
-# #         self.lr_scheduler.step()
-# #         self.optimizer.zero_grad()
-        
-# #         # Log results
-# #         logs = {
-# #             "epoch": (epoch // len(self.train_dataloader)),
-# #             "iteration": epoch,
-# #             "mse loss": loss.detach().item(),
-# #             "lr": self.lr_scheduler.get_last_lr()[0]
-# #         }
-# #         print(", ".join([key + ": " + str(round(value, 5)) for key, value in logs.items()]))
-# #         wandb.log(logs)
-        
-# #         return loss.item()
-
-# #     def train(self):
-# #         number_iteration = 0
-# #         for epoch in range(self.config.num_epochs):
-# #             for iteration, batch in enumerate(self.train_dataloader):
-# #                 self.train_single_batch(batch, number_iteration)
-# #                 number_iteration += 1
-                
-# #                 # Evaluate periodically
-# #                 if (number_iteration >= self.config.eval_begin and 
-# #                     number_iteration % self.config.eval_interval == 0):
-# #                     # Get a random batch from validation set
-# #                     index = random.randint(1, len(self.val_dataloader) - 1)
-# #                     for eval_iteration, eval_batch in enumerate(self.val_dataloader):
-# #                         if eval_iteration == index:
-# #                             self.evaluate(eval_batch, number_iteration)
-# #                             break
-
-
-# import random
-# import os
-# import numpy as np
-# import matplotlib.pyplot as plt
-# import wandb
-# import torch
-# import torch.nn.functional as F
-# from torch.utils.data import DataLoader
-# from diffusers.optimization import get_cosine_schedule_with_warmup
-# from mmengine import Config
-# from ..registry import EEGDiffMR, EEGDiffDR
-# from ..pipeline import DDIMPipeline1D
-
-# @EEGDiffMR.register_module()
-# class EEGDiffTrainner1D:
-#     def __init__(self,
-#                  trainner_config: Config,
-#                  unet: Config,
-#                  noise_scheduler: Config,
-#                  optimizer: Config,
-#                  train_dataset: Config,
-#                  val_dataset: Config):
-#         self.config = trainner_config
-#         self.unet = EEGDiffMR.build(unet)
-#         self.initial_unet()
-#         self.noise_scheduler = EEGDiffMR.build(noise_scheduler)
-#         self.pipeline = DDIMPipeline1D(unet=self.unet, scheduler=self.noise_scheduler)
-        
-#         # Define a custom normalization function
-#         def normalize_1d(tensor):
-#             return (tensor - 0.5) / 0.5  # Equivalent to Normalize(mean=[0.5], std=[0.5])
-        
-#         self.train_dataset = EEGDiffDR.build(train_dataset)
-#         self.val_dataset = EEGDiffDR.build(val_dataset)
-#         self.train_dataset.transform = normalize_1d
-#         self.val_dataset.transform = normalize_1d
-        
-#         self.train_dataloader = DataLoader(
-#             self.train_dataset, 
-#             batch_size=self.config.train_batch_size, 
-#             shuffle=True
-#         )
-#         self.val_dataloader = DataLoader(
-#             self.val_dataset, 
-#             batch_size=self.config.eval_batch_size, 
-#             shuffle=True
-#         )
-        
-#         self.optimizer = torch.optim.Adam(
-#             self.unet.parameters(), 
-#             lr=optimizer.learning_rate
-#         )
-#         self.lr_scheduler = get_cosine_schedule_with_warmup(
-#             optimizer=self.optimizer,
-#             num_warmup_steps=self.config.lr_warmup_steps,
-#             num_training_steps=(len(self.train_dataloader) * self.config.num_epochs),
-#         )
-
-#     def initial_unet(self):
-#         self.unet.to(self.config.device)
-#         if self.config.u_net_weight_path is not None:
-#             self.unet.load_state_dict(torch.load(self.config.u_net_weight_path, map_location=self.config.device))
-#             print(f"Load u_net weight from {self.config.u_net_weight_path}")
-#         else:
-#             print("No u_net weight path is provided, using random weights")
-
-#     # def evaluate(self, batch, epoch):
-#     #     original_signal = batch[0].to(self.config.device)
-#     #     father_path = f"{self.config.output_dir}/{epoch}"
-#     #     if not os.path.exists(father_path):
-#     #         os.makedirs(father_path)
-            
-#     #     # Generate predicted signal
-#     #     result = self.pipeline(
-#     #         original_signal,
-#     #         self.config.prediction_point,
-#     #         batch_size=len(original_signal),
-#     #         num_inference_steps=self.config.num_train_timesteps,
-#     #     )
-        
-#     #     # Extract the predicted signal
-#     #     predicted_signal = result.images
-        
-#     #     # Normalize original signal for comparison
-#     #     original_signal = (original_signal / 2 + 0.5).clamp(0, 1)
-        
-#     #     # Move tensors to CPU for processing with numpy
-#     #     predicted_signal_np = predicted_signal.cpu().numpy()
-#     #     original_signal_np = original_signal.cpu().numpy()
-        
-#     #     # Calculate difference between original and predicted
-#     #     diff = np.sum((original_signal_np - predicted_signal_np) ** 2)
-#     #     wandb.log({'signal diff': diff})
-
-#     #     # Plot a random sample for visualization
-#     #     index = np.random.randint(0, len(original_signal) - 1)
-        
-#     #     # Plot predicted signal
-#     #     plt.figure(figsize=(15, 5))
-#     #     plt.plot(predicted_signal_np[index, 0, :])
-#     #     plt.title('Predicted Signal')
-#     #     plt.savefig(f"{father_path}/predicted_signal.png")
-#     #     plt.close()
-        
-#     #     # Plot original signal
-#     #     plt.figure(figsize=(15, 5))
-#     #     plt.plot(original_signal_np[index, 0, :])
-#     #     plt.title('Original Signal')
-#     #     plt.savefig(f"{father_path}/original_signal.png")
-#     #     plt.close()
-        
-#     #     # Plot comparison
-#     #     plt.figure(figsize=(15, 5))
-#     #     plt.plot(original_signal_np[index, 0, :], label='Original')
-#     #     plt.plot(predicted_signal_np[index, 0, :], label='Predicted')
-#     #     plt.axvline(x=self.config.prediction_point, color='r', linestyle='--', label='Prediction Point')
-#     #     plt.legend()
-#     #     plt.title('Original vs Predicted Signal')
-#     #     plt.savefig(f"{father_path}/comparison.png")
-#     #     plt.close()
-        
-#     #     # Save model weights
-#     #     torch.save(self.unet.state_dict(), f"{father_path}/unet.pth")
-
-#     def evaluate(self, batch, epoch):
-#         original_signal = batch[0].to(self.config.device)
-#         father_path = f"{self.config.output_dir}/{epoch}"
-#         if not os.path.exists(father_path):
-#             os.makedirs(father_path)
-        
-#         # Create a directory specifically for sample visualizations
-#         samples_dir = os.path.join(father_path, "samples")
-#         if not os.path.exists(samples_dir):
-#             os.makedirs(samples_dir)
-        
-#         # Generate predicted signal
-#         result = self.pipeline(
-#             original_signal,
-#             self.config.prediction_point,
-#             batch_size=len(original_signal),
-#             num_inference_steps=self.config.num_train_timesteps,
-#         )
-        
-#         # Extract the predicted signal
-#         predicted_signal = result.images
-        
-#         # Normalize original signal for comparison
-#         original_signal = (original_signal / 2 + 0.5).clamp(0, 1)
-        
-#         # Move tensors to CPU for processing with numpy
-#         predicted_signal_np = predicted_signal.cpu().numpy()
-#         original_signal_np = original_signal.cpu().numpy()
-        
-#         # Calculate difference between original and predicted
-#         diff = np.sum((original_signal_np - predicted_signal_np) ** 2)
-#         wandb.log({'signal diff': diff})
-        
-#         # Calculate per-sample MSE for the predicted part
-#         sample_mses = []
-#         for i in range(len(original_signal)):
-#             pred_part_orig = original_signal_np[i, 0, self.config.prediction_point:]
-#             pred_part_pred = predicted_signal_np[i, 0, self.config.prediction_point:]
-#             mse = np.mean((pred_part_pred - pred_part_orig) ** 2)
-#             sample_mses.append(mse)
-        
-#         # Log average MSE
-#         wandb.log({'avg_prediction_mse': np.mean(sample_mses)})
-        
-#         # Determine number of samples to visualize - either 10 or the batch size if smaller
-#         num_samples = min(10, len(original_signal))
-        
-#         # Pick samples with diverse prediction quality (some good, some bad predictions)
-#         # Sort by MSE and sample evenly
-#         sorted_indices = np.argsort(sample_mses)
-#         step = max(1, len(sorted_indices) // num_samples)
-#         selected_indices = sorted_indices[::step][:num_samples]
-        
-#         # Create individual plots for each selected sample
-#         for i, idx in enumerate(selected_indices):
-#             # Plot predicted signal
-#             plt.figure(figsize=(15, 5))
-#             plt.plot(predicted_signal_np[idx, 0, :])
-#             plt.title(f'Sample {i+1}: Predicted Signal (MSE: {sample_mses[idx]:.4f})')
-#             plt.savefig(f"{samples_dir}/sample_{i+1}_predicted.png")
-#             plt.close()
-            
-#             # Plot original signal
-#             plt.figure(figsize=(15, 5))
-#             plt.plot(original_signal_np[idx, 0, :])
-#             plt.title(f'Sample {i+1}: Original Signal')
-#             plt.savefig(f"{samples_dir}/sample_{i+1}_original.png")
-#             plt.close()
-            
-#             # Plot comparison
-#             plt.figure(figsize=(15, 5))
-#             plt.plot(original_signal_np[idx, 0, :], label='Original')
-#             plt.plot(predicted_signal_np[idx, 0, :], label='Predicted')
-#             plt.axvline(x=self.config.prediction_point, color='r', linestyle='--', label='Prediction Point')
-#             plt.legend()
-#             plt.title(f'Sample {i+1}: Original vs Predicted Signal (MSE: {sample_mses[idx]:.4f})')
-#             plt.savefig(f"{samples_dir}/sample_{i+1}_comparison.png")
-#             plt.close()
-        
-#         # Create a multi-sample comparison plot (all samples in one figure)
-#         fig, axs = plt.subplots(num_samples, 1, figsize=(15, 4*num_samples), sharex=True)
-#         for i, idx in enumerate(selected_indices):
-#             if num_samples == 1:
-#                 ax = axs  # If only one sample, axs is not a list
-#             else:
-#                 ax = axs[i]
-                
-#             ax.plot(original_signal_np[idx, 0, :], 'b-', label='Original')
-#             ax.plot(predicted_signal_np[idx, 0, :], 'g-', label='Predicted')
-#             ax.axvline(x=self.config.prediction_point, color='r', linestyle='--', label='Prediction Point')
-#             ax.set_title(f'Sample {i+1} (MSE: {sample_mses[idx]:.4f})')
-#             ax.legend()
-        
-#         plt.tight_layout()
-#         plt.savefig(f"{father_path}/multi_sample_comparison.png")
-#         plt.close()
-        
-#         # Create a summary visualization of prediction quality distribution
-#         plt.figure(figsize=(10, 6))
-#         plt.hist(sample_mses, bins=20)
-#         plt.title(f'Distribution of MSE Across Samples (Avg: {np.mean(sample_mses):.4f})')
-#         plt.xlabel('MSE')
-#         plt.ylabel('Count')
-#         plt.savefig(f"{father_path}/mse_distribution.png")
-#         plt.close()
-        
-#         # Save model weights
-#         torch.save(self.unet.state_dict(), f"{father_path}/unet.pth")
-
-#     # def train_single_batch(self, batch, epoch):
-#     #     clean_signals = batch[0].to(self.config.device)
-        
-#     #     # Generate noise
-#     #     noise = torch.randn(clean_signals.shape).to(clean_signals.device)
-        
-#     #     # Sample a random timestep for each example
-#     #     timesteps = torch.randint(
-#     #         0, 
-#     #         self.noise_scheduler.config.num_train_timesteps,  # Use config.num_train_timesteps to avoid warning
-#     #         (clean_signals.shape[0],),
-#     #         device=clean_signals.device
-#     #     ).long()
-        
-#     #     # Add noise to signals
-#     #     signals_with_noise = self.noise_scheduler.add_noise(clean_signals, noise, timesteps)
-        
-#     #     # Keep the first part of the signal unchanged (conditioning)
-#     #     signals_with_noise[:, :, :self.config.prediction_point] = clean_signals[:, :, :self.config.prediction_point]
-
-#     def train_single_batch(self, batch, epoch):
-#         clean_signals = batch[0].to(self.config.device)
-        
-#         # Update here: Scale down the noise
-#         noise_scale = 1  # Experiment with values between 0.01-0.5
-#         noise = noise_scale * torch.randn(clean_signals.shape).to(clean_signals.device)
-        
-#         # Rest of the method remains the same
-#         timesteps = torch.randint(
-#             0, 
-#             self.noise_scheduler.config.num_train_timesteps,
-#             (clean_signals.shape[0],),
-#             device=clean_signals.device
-#         ).long()
-        
-#         # Add scaled noise to signals
-#         signals_with_noise = self.noise_scheduler.add_noise(clean_signals, noise, timesteps)
-        
-#         # Keep the first part of the signal unchanged (conditioning)
-#         signals_with_noise[:, :, :self.config.prediction_point] = clean_signals[:, :, :self.config.prediction_point]
-        
-#         # Predict the noise residual
-#         noise_pred = self.unet(signals_with_noise, timesteps).sample
-        
-#         # Compute loss only on the predicted part
-#         loss = F.mse_loss(
-#             noise_pred[:, :, self.config.prediction_point:],
-#             noise[:, :, self.config.prediction_point:]
-#         )
-        
-#         # Backpropagate
-#         loss.backward()
-#         self.optimizer.step()
-#         self.lr_scheduler.step()
-#         self.optimizer.zero_grad()
-        
-#         # Log results
-#         logs = {
-#             "epoch": (epoch // len(self.train_dataloader)),
-#             "iteration": epoch,
-#             "mse loss": loss.detach().item(),
-#             "lr": self.lr_scheduler.get_last_lr()[0]
-#         }
-#         print(", ".join([key + ": " + str(round(value, 5)) for key, value in logs.items()]))
-#         wandb.log(logs)
-        
-#         return loss.item()
-
-#     def train(self):
-#         number_iteration = 0
-#         for epoch in range(self.config.num_epochs):
-#             for iteration, batch in enumerate(self.train_dataloader):
-#                 self.train_single_batch(batch, number_iteration)
-#                 number_iteration += 1
-                
-#                 # Evaluate periodically
-#                 if (number_iteration >= self.config.eval_begin and 
-#                     number_iteration % self.config.eval_interval == 0):
-#                     # Get a random batch from validation set
-#                     index = random.randint(0, len(self.val_dataloader) - 1)
-#                     for eval_iteration, eval_batch in enumerate(self.val_dataloader):
-#                         if eval_iteration == index:
-#                             self.evaluate(eval_batch, number_iteration)
-#                             break
-
-
 import random
 import os
 import numpy as np
@@ -536,14 +28,17 @@ class EEGDiffTrainner1D:
         self.noise_scheduler = EEGDiffMR.build(noise_scheduler)
         self.pipeline = DDIMPipeline1D(unet=self.unet, scheduler=self.noise_scheduler)
         
-        # Define a custom normalization function
+        # Define normalization function
         def normalize_1d(tensor):
-            return (tensor - 0.5) / 0.5  # Equivalent to Normalize(mean=[0.5], std=[0.5])
+            return (tensor - 0.5) / 0.5
         
         self.train_dataset = EEGDiffDR.build(train_dataset)
         self.val_dataset = EEGDiffDR.build(val_dataset)
         self.train_dataset.transform = normalize_1d
         self.val_dataset.transform = normalize_1d
+        
+        # Don't apply additional transform - use data as-is from dataset
+        # The dataset already normalizes to [0,1] which is appropriate
         
         self.train_dataloader = DataLoader(
             self.train_dataset, 
@@ -556,15 +51,30 @@ class EEGDiffTrainner1D:
             shuffle=True
         )
         
-        self.optimizer = torch.optim.Adam(
+        # FIXED: Use AdamW with better parameters
+        self.optimizer = torch.optim.AdamW(
             self.unet.parameters(), 
-            lr=optimizer.learning_rate
+            lr=optimizer.learning_rate,
+            weight_decay=optimizer.get('weight_decay', 0.01),
+            betas=optimizer.get('betas', (0.9, 0.999)),
+            eps=optimizer.get('eps', 1e-8)
         )
+        
         self.lr_scheduler = get_cosine_schedule_with_warmup(
             optimizer=self.optimizer,
             num_warmup_steps=self.config.lr_warmup_steps,
             num_training_steps=(len(self.train_dataloader) * self.config.num_epochs),
         )
+
+         # EARLY STOPPING VARIABLES
+        self.best_val_loss = float('inf')
+        self.patience_counter = 0
+        self.early_stopping_patience = getattr(self.config, 'early_stopping_patience', 10)
+        self.min_delta = getattr(self.config, 'min_delta', 0.001)
+        
+        # VALIDATION LOSS TRACKING
+        self.train_losses = []
+        self.val_losses = []
         
         # Load labels for seizure/non-seizure classification
         try:
@@ -589,570 +99,376 @@ class EEGDiffTrainner1D:
         else:
             print("No u_net weight path is provided, using random weights")
 
-    def evaluate(self, batch, epoch, is_training_set=False):
+    def validate_full_dataset(self):
         """
-        Enhanced evaluation method with seizure/non-seizure comparison
-        
-        Args:
-            batch: The batch of data to evaluate
-            epoch: Current epoch/iteration
-            is_training_set: Whether this batch is from training set (True) or test set (False)
+        Validate on the entire validation dataset to get reliable metrics
         """
-        original_signal = batch[0].to(self.config.device)
-        father_path = f"{self.config.output_dir}/{epoch}"
-        if not os.path.exists(father_path):
-            os.makedirs(father_path)
+        self.unet.eval()
+        total_loss = 0
+        num_batches = 0
         
-        # Create directories for sample visualizations and dataset-specific plots
-        samples_dir = os.path.join(father_path, "samples")
-        if not os.path.exists(samples_dir):
-            os.makedirs(samples_dir)
+        with torch.no_grad():
+            for batch in self.val_dataloader:
+                clean_signals = batch[0].to(self.config.device)
+                
+                # Generate noise
+                noise = torch.randn(clean_signals.shape).to(clean_signals.device)
+                
+                # Sample random timesteps
+                timesteps = torch.randint(
+                    0, 
+                    self.noise_scheduler.config.num_train_timesteps,
+                    (clean_signals.shape[0],),
+                    device=clean_signals.device
+                ).long()
+                
+                # Add noise to signals
+                signals_with_noise = self.noise_scheduler.add_noise(clean_signals, noise, timesteps)
+                
+                # Keep conditioning part unchanged
+                signals_with_noise[:, :, :self.config.prediction_point] = clean_signals[:, :, :self.config.prediction_point]
+                
+                # Predict noise
+                noise_pred = self.unet(signals_with_noise, timesteps).sample
+                
+                # Calculate loss only on predicted part
+                loss = F.mse_loss(
+                    noise_pred[:, :, self.config.prediction_point:],
+                    noise[:, :, self.config.prediction_point:]
+                )
+                
+                total_loss += loss.item()
+                num_batches += 1
         
-        dataset_dir = os.path.join(father_path, "train_test_comparison")
-        if not os.path.exists(dataset_dir):
-            os.makedirs(dataset_dir)
-        
-        # Generate predicted signal
-        result = self.pipeline(
-            original_signal,
-            self.config.prediction_point,
-            batch_size=len(original_signal),
-            num_inference_steps=self.config.num_train_timesteps,
-        )
-        
-        # Extract the predicted signal
-        predicted_signal = result.images
-        
-        # Normalize original signal for comparison
-        original_signal = (original_signal / 2 + 0.5).clamp(0, 1)
-        
-        # Move tensors to CPU for processing with numpy
-        predicted_signal_np = predicted_signal.cpu().numpy()
-        original_signal_np = original_signal.cpu().numpy()
-        
-        # Save concatenated data (original first half + predicted second half) as CSV
-        # Use the original normalized signals before the comparison normalization
-        original_for_concat = batch[0].to(self.config.device)  # This is the original normalized data
-        
-        # Create concatenated data: original first half + predicted second half
-        concatenated_data = []
-        for i in range(len(original_for_concat)):
-            # Get original first half (before prediction point)
-            first_half = original_for_concat[i, 0, :self.config.prediction_point].cpu().numpy()
-            # Get predicted second half (after prediction point)  
-            second_half = predicted_signal[i, 0, self.config.prediction_point:].cpu().numpy()
-            # Concatenate
-            full_signal = np.concatenate([first_half, second_half])
-            concatenated_data.append(full_signal)
-        
-        # Convert to numpy array
-        concatenated_data = np.array(concatenated_data)
-        
-        # Save concatenated data as CSV
-        dataset_type = "train" if is_training_set else "test"
-        csv_filename = f"{father_path}/concatenated_{dataset_type}_data_epoch_{epoch}.csv"
-        
-        # Save as CSV with same format as original data (rows=samples, columns=datapoints)
-        with open(csv_filename, 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            for sample in concatenated_data:
-                writer.writerow(sample)
-        
-        print(f"Saved concatenated data to {csv_filename} with shape: {concatenated_data.shape}")
+        self.unet.train()
+        avg_val_loss = total_loss / num_batches
+        return avg_val_loss
 
-        # Calculate difference between original and predicted
-        diff = np.sum((original_signal_np - predicted_signal_np) ** 2)
-        wandb.log({'signal diff': diff})
+    def should_stop_early(self, val_loss):
+        """
+        Check if training should stop early based on validation loss
+        """
+        if val_loss < self.best_val_loss - self.min_delta:
+            self.best_val_loss = val_loss
+            self.patience_counter = 0
+            return False
+        else:
+            self.patience_counter += 1
+            if self.patience_counter >= self.early_stopping_patience:
+                print(f"Early stopping triggered! No improvement for {self.early_stopping_patience} evaluations")
+                return True
+            return False
         
-        # Calculate per-sample MSE for the predicted part
-        sample_mses = []
-        for i in range(len(original_signal)):
-            pred_part_orig = original_signal_np[i, 0, self.config.prediction_point:]
-            pred_part_pred = predicted_signal_np[i, 0, self.config.prediction_point:]
-            mse = np.mean((pred_part_pred - pred_part_orig) ** 2)
-            sample_mses.append(mse)
-        
-        # Log average MSE
-        wandb.log({'avg_prediction_mse': np.mean(sample_mses)})
-        
-        # Get batch labels if available
-        labels = None
-        if is_training_set and self.train_labels is not None:
-            # This is more complex since we don't know exactly which samples from training set are in this batch
-            # For now, we'll just check if we have enough labels for the whole dataset
-            if len(self.train_labels) >= len(self.train_dataset):
-                # Just use the first N labels as a simple approach
-                # This won't match the exact samples but gives us something to work with
-                labels = self.train_labels[:len(original_signal)]
-                dataset_name = "training"
-        elif not is_training_set and self.test_labels is not None:
-            # Same simplification for test set
-            if len(self.test_labels) >= len(self.val_dataset):
-                labels = self.test_labels[:len(original_signal)]
-                dataset_name = "testing"
-        
-        # Create seizure/non-seizure visualizations if labels are available
-        if labels is not None:
-            # Separate seizure and non-seizure samples
-            seizure_indices = [i for i, label in enumerate(labels) if label == 1]
-            non_seizure_indices = [i for i, label in enumerate(labels) if label == 0]
-            
-            # Skip if we don't have both classes in this batch
-            if len(seizure_indices) > 0 and len(non_seizure_indices) > 0:
-                # Calculate average MSE for seizure and non-seizure samples
-                seizure_mse = np.mean([sample_mses[i] for i in seizure_indices])
-                non_seizure_mse = np.mean([sample_mses[i] for i in non_seizure_indices])
-                
-                wandb.log({
-                    f'{dataset_name}_seizure_mse': seizure_mse,
-                    f'{dataset_name}_non_seizure_mse': non_seizure_mse
-                })
-                
-                pred_start = self.config.prediction_point
-                
-                # 1. Plot all seizure samples in one figure
-                plt.figure(figsize=(15, 8))
-                for idx in seizure_indices:
-                    # Only plot the predicted part for clarity
-                    plt.plot(range(pred_start, len(predicted_signal_np[idx, 0, :])), 
-                             predicted_signal_np[idx, 0, pred_start:], 'r-', alpha=0.3)
-                
-                # Plot average of seizure predictions
-                avg_seizure_pred = np.mean([predicted_signal_np[idx, 0, pred_start:] for idx in seizure_indices], axis=0)
-                plt.plot(range(pred_start, len(predicted_signal_np[0, 0, :])), 
-                         avg_seizure_pred, 'r-', linewidth=3, label='Avg Seizure Prediction')
-                
-                # Plot average of seizure originals
-                avg_seizure_orig = np.mean([original_signal_np[idx, 0, pred_start:] for idx in seizure_indices], axis=0)
-                plt.plot(range(pred_start, len(original_signal_np[0, 0, :])), 
-                         avg_seizure_orig, 'b-', linewidth=3, label='Avg Seizure Original')
-                
-                plt.title(f'{dataset_name.capitalize()} Seizure Predictions (MSE: {seizure_mse:.4f})')
-                plt.legend()
-                plt.savefig(f"{dataset_dir}/{dataset_name}_seizure_predictions.png")
-                plt.close()
-                
-                # 2. Plot all non-seizure samples in one figure
-                plt.figure(figsize=(15, 8))
-                for idx in non_seizure_indices:
-                    # Only plot the predicted part for clarity
-                    plt.plot(range(pred_start, len(predicted_signal_np[idx, 0, :])), 
-                             predicted_signal_np[idx, 0, pred_start:], 'g-', alpha=0.3)
-                
-                # Plot average of non-seizure predictions
-                avg_non_seizure_pred = np.mean([predicted_signal_np[idx, 0, pred_start:] for idx in non_seizure_indices], axis=0)
-                plt.plot(range(pred_start, len(predicted_signal_np[0, 0, :])), 
-                         avg_non_seizure_pred, 'g-', linewidth=3, label='Avg Non-Seizure Prediction')
-                
-                # Plot average of non-seizure originals
-                avg_non_seizure_orig = np.mean([original_signal_np[idx, 0, pred_start:] for idx in non_seizure_indices], axis=0)
-                plt.plot(range(pred_start, len(original_signal_np[0, 0, :])), 
-                         avg_non_seizure_orig, 'b-', linewidth=3, label='Avg Non-Seizure Original')
-                
-                plt.title(f'{dataset_name.capitalize()} Non-Seizure Predictions (MSE: {non_seizure_mse:.4f})')
-                plt.legend()
-                plt.savefig(f"{dataset_dir}/{dataset_name}_non_seizure_predictions.png")
-                plt.close()
-                
-                # 3. Combined plot with average seizure vs non-seizure
-                plt.figure(figsize=(15, 8))
-                
-                plt.plot(range(pred_start, len(predicted_signal_np[0, 0, :])), 
-                         avg_seizure_pred, 'r-', linewidth=2, label='Avg Seizure Prediction')
-                plt.plot(range(pred_start, len(original_signal_np[0, 0, :])), 
-                         avg_seizure_orig, 'r--', linewidth=2, label='Avg Seizure Original')
-                
-                plt.plot(range(pred_start, len(predicted_signal_np[0, 0, :])), 
-                         avg_non_seizure_pred, 'g-', linewidth=2, label='Avg Non-Seizure Prediction')
-                plt.plot(range(pred_start, len(original_signal_np[0, 0, :])), 
-                         avg_non_seizure_orig, 'g--', linewidth=2, label='Avg Non-Seizure Original')
-                
-                plt.title(f'{dataset_name.capitalize()} Average Seizure vs Non-Seizure Comparison')
-                plt.legend()
-                plt.savefig(f"{dataset_dir}/{dataset_name}_avg_seizure_vs_non_seizure.png")
-                plt.close()
-                
-                # Create a bar chart for seizure vs non-seizure MSE
-                plt.figure(figsize=(10, 6))
-                plt.bar(['Seizure', 'Non-Seizure'], [seizure_mse, non_seizure_mse])
-                plt.title(f'{dataset_name.capitalize()} MSE Comparison: Seizure vs Non-Seizure')
-                plt.ylabel('Mean Squared Error')
-                plt.savefig(f"{dataset_dir}/{dataset_name}_seizure_vs_non_seizure_mse.png")
-                plt.close()
-            else:
-                print(f"Warning: Batch does not contain both seizure and non-seizure samples")
-        
-        # Determine number of samples to visualize - either 10 or the batch size if smaller
-        num_samples = min(10, len(original_signal))
-        
-        # Pick samples with diverse prediction quality (some good, some bad predictions)
-        # Sort by MSE and sample evenly
-        sorted_indices = np.argsort(sample_mses)
-        step = max(1, len(sorted_indices) // num_samples)
-        selected_indices = sorted_indices[::step][:num_samples]
-        
-        # Create individual plots for each selected sample
-        for i, idx in enumerate(selected_indices):
-            # Plot predicted signal
-            plt.figure(figsize=(15, 5))
-            plt.plot(predicted_signal_np[idx, 0, :])
-            
-            # Add seizure/non-seizure label if available
-            label_str = ""
-            if labels is not None and idx < len(labels):
-                label_str = " (Seizure)" if labels[idx] == 1 else " (Non-Seizure)"
-                
-            plt.title(f'Sample {i+1}: Predicted Signal (MSE: {sample_mses[idx]:.4f}){label_str}')
-            plt.savefig(f"{samples_dir}/sample_{i+1}_predicted.png")
-            plt.close()
-            
-            # Plot original signal
-            plt.figure(figsize=(15, 5))
-            plt.plot(original_signal_np[idx, 0, :])
-            plt.title(f'Sample {i+1}: Original Signal{label_str}')
-            plt.savefig(f"{samples_dir}/sample_{i+1}_original.png")
-            plt.close()
-            
-            # Plot comparison
-            plt.figure(figsize=(15, 5))
-            plt.plot(original_signal_np[idx, 0, :], label='Original')
-            plt.plot(predicted_signal_np[idx, 0, :], label='Predicted')
-            plt.axvline(x=self.config.prediction_point, color='r', linestyle='--', label='Prediction Point')
-            plt.legend()
-            plt.title(f'Sample {i+1}: Original vs Predicted Signal (MSE: {sample_mses[idx]:.4f}){label_str}')
-            plt.savefig(f"{samples_dir}/sample_{i+1}_comparison.png")
-            plt.close()
-        
-        # Create a multi-sample comparison plot (all samples in one figure)
-        fig, axs = plt.subplots(num_samples, 1, figsize=(15, 4*num_samples), sharex=True)
-        for i, idx in enumerate(selected_indices):
-            if num_samples == 1:
-                ax = axs  # If only one sample, axs is not a list
-            else:
-                ax = axs[i]
-                
-            ax.plot(original_signal_np[idx, 0, :], 'b-', label='Original')
-            ax.plot(predicted_signal_np[idx, 0, :], 'g-', label='Predicted')
-            ax.axvline(x=self.config.prediction_point, color='r', linestyle='--', label='Prediction Point')
-            
-            # Add seizure/non-seizure label if available
-            label_str = ""
-            if labels is not None and idx < len(labels):
-                label_str = " (Seizure)" if labels[idx] == 1 else " (Non-Seizure)"
-                
-            ax.set_title(f'Sample {i+1} (MSE: {sample_mses[idx]:.4f}){label_str}')
-            ax.legend()
-        
-        plt.tight_layout()
-        plt.savefig(f"{father_path}/multi_sample_comparison.png")
-        plt.close()
-        
-        # Create a summary visualization of prediction quality distribution
-        plt.figure(figsize=(10, 6))
-        plt.hist(sample_mses, bins=20)
-        plt.title(f'Distribution of MSE Across Samples (Avg: {np.mean(sample_mses):.4f})')
-        plt.xlabel('MSE')
-        plt.ylabel('Count')
-        plt.savefig(f"{father_path}/mse_distribution.png")
-        plt.close()
-        
-        # Save model weights
-        torch.save(self.unet.state_dict(), f"{father_path}/unet.pth")
-
     def train_single_batch(self, batch, epoch):
         clean_signals = batch[0].to(self.config.device)
         
-        # Generate noise
+        # IMPROVED: Generate noise that matches signal characteristics
+        signal_mean = clean_signals.mean()
+        signal_std = clean_signals.std()
+
         noise = torch.randn(clean_signals.shape).to(clean_signals.device)
+        noise = noise * (signal_std * 0.1) + signal_mean  # Much smaller noise scale
         
         # Sample a random timestep for each example
         timesteps = torch.randint(
             0, 
-            self.noise_scheduler.config.num_train_timesteps,  # Use config.num_train_timesteps to avoid warning
+            self.noise_scheduler.config.num_train_timesteps,
             (clean_signals.shape[0],),
             device=clean_signals.device
         ).long()
         
-        # Add noise to signals
-        signals_with_noise = self.noise_scheduler.add_noise(clean_signals, noise, timesteps)
+        # FIXED: Add noise to the entire signal first, then condition
+        noisy_signals = self.noise_scheduler.add_noise(clean_signals, noise, timesteps)
         
-        # Keep the first part of the signal unchanged (conditioning)
-        signals_with_noise[:, :, :self.config.prediction_point] = clean_signals[:, :, :self.config.prediction_point]
+        # Apply conditioning after noise addition
+        # Keep the conditioning region from the original clean signal
+        noisy_signals[:, :, :self.config.prediction_point] = clean_signals[:, :, :self.config.prediction_point]
         
         # Predict the noise residual
-        noise_pred = self.unet(signals_with_noise, timesteps).sample
+        noise_pred = self.unet(noisy_signals, timesteps).sample
         
-        # Compute loss only on the predicted part
-        loss = F.mse_loss(
+        # FIXED: Compute loss with proper weighting
+        # Loss on full signal with higher weight on prediction region
+        prediction_loss = F.mse_loss(
             noise_pred[:, :, self.config.prediction_point:],
             noise[:, :, self.config.prediction_point:]
         )
         
-        # Backpropagate
+        # Optional: Add small loss on conditioning region to maintain consistency
+        conditioning_loss = F.mse_loss(
+            noise_pred[:, :, :self.config.prediction_point],
+            noise[:, :, :self.config.prediction_point]
+        )
+        
+        # Weighted combination - focus on prediction region
+        loss = prediction_loss + 0.1 * conditioning_loss
+        
+        # FIXED: Gradient clipping before step
         loss.backward()
+        
+        # Clip gradients to prevent explosion
+        torch.nn.utils.clip_grad_norm_(self.unet.parameters(), max_norm=1.0)
+        
         self.optimizer.step()
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
         
-        # Log results
+        # Enhanced logging
         logs = {
             "epoch": (epoch // len(self.train_dataloader)),
             "iteration": epoch,
-            "mse loss": loss.detach().item(),
+            "total_loss": loss.detach().item(),
+            "prediction_loss": prediction_loss.detach().item(),
+            "conditioning_loss": conditioning_loss.detach().item(),
             "lr": self.lr_scheduler.get_last_lr()[0]
         }
-        print(", ".join([key + ": " + str(round(value, 5)) for key, value in logs.items()]))
+        
+        # Print progress
+        if epoch % 100 == 0 or epoch < 50:  # More frequent logging at start
+            print(", ".join([key + ": " + str(round(value, 6)) for key, value in logs.items()]))
+        
         wandb.log(logs)
         
         return loss.item()
 
-    def evaluate_full_datasets(self, epoch):
-        """
-        Evaluate on full training and testing datasets to get comprehensive comparison
-        between seizure and non-seizure performance
-        """
-        print("Evaluating on full training and testing datasets...")
+    def create_sample_visualizations(self, concatenated_data_norm, mses, dataset_name, epoch, labels=None):
+        """Create sample visualizations for the evaluation using denormalized data"""
+        father_path = f"{self.config.output_dir}/{epoch}"
+        samples_dir = os.path.join(father_path, f"{dataset_name}_samples")
+        if not os.path.exists(samples_dir):
+            os.makedirs(samples_dir)
         
-        # Create directory for full evaluation results
-        full_eval_dir = f"{self.config.output_dir}/{epoch}/full_evaluation"
-        if not os.path.exists(full_eval_dir):
-            os.makedirs(full_eval_dir)
+        # Select samples for visualization
+        num_samples = min(10, len(concatenated_data_norm))
+        sorted_indices = np.argsort(mses)
+        step = max(1, len(sorted_indices) // num_samples)
+        selected_indices = sorted_indices[::step][:num_samples]
         
-        # Function to process an entire dataset and create visualizations
-        def evaluate_dataset(dataloader, dataset_name, labels=None):
-            print(f"Processing entire {dataset_name} dataset...")
-            all_originals = []
-            all_predictions = []
-            all_mses = []
-            all_originals_for_concat = []
+        # Create individual plots for selected samples
+        for i, idx in enumerate(selected_indices):
+            plt.figure(figsize=(15, 5))
             
-            # Process all batches
+            # Plot full signal with prediction point marked (using denormalized data)
+            plt.plot(concatenated_data_norm[idx], label='Concatenated (Original + Predicted)', linewidth=1)
+            plt.axvline(x=self.config.prediction_point, color='r', linestyle='--', label='Prediction Point')
+            
+            # Add label if available
+            label_str = ""
+            if labels is not None and idx < len(labels):
+                label_str = " (Seizure)" if labels[idx] == 1 else " (Non-Seizure)"
+            
+            plt.title(f'{dataset_name} Sample {i+1}: MSE={mses[idx]:.4f}{label_str}')
+            plt.xlabel('Time Points')
+            plt.ylabel('EEG Signal (Normalized [0,1])')
+            plt.legend()
+            plt.grid(True, alpha=0.3)
+            plt.ylim(-0.1, 1.1)
+            plt.savefig(f"{samples_dir}/sample_{i+1}_concatenated.png", dpi=150, bbox_inches='tight')
+            plt.close()
+        
+        # Create MSE distribution plot
+        plt.figure(figsize=(10, 6))
+        plt.hist(mses, bins=30, alpha=0.7, edgecolor='black')
+        plt.title(f'{dataset_name} MSE Distribution (Avg: {np.mean(mses):.4f})')
+        plt.xlabel('MSE')
+        plt.ylabel('Count')
+        plt.grid(True, alpha=0.3)
+        plt.savefig(f"{samples_dir}/mse_distribution.png", dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        # Create data range comparison plot
+        plt.figure(figsize=(12, 8))
+        
+        # Plot first few samples to show data range
+        num_range_samples = min(5, len(concatenated_data_norm))
+        for i in range(num_range_samples):
+            plt.subplot(num_range_samples, 1, i+1)
+            plt.plot(concatenated_data_norm[selected_indices[i]], linewidth=1)
+            plt.axvline(x=self.config.prediction_point, color='r', linestyle='--', alpha=0.7)
+            plt.title(f'Sample {i+1} - Range: [{np.min(concatenated_data_norm[selected_indices[i]]):.2f}, {np.max(concatenated_data_norm[selected_indices[i]]):.2f}]')
+            plt.ylabel('EEG Signal (Normalized)')  # CHANGED: Updated label
+            if i == num_range_samples - 1:
+                plt.xlabel('Time Points')
+        
+        plt.tight_layout()
+        plt.savefig(f"{samples_dir}/data_range_samples.png", dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        print(f"Created visualizations for {dataset_name} dataset in {samples_dir}")
+        print(f"Normalized data range: [{np.min(concatenated_data_norm):.4f}, {np.max(concatenated_data_norm):.4f}]")  # CHANGED: Updated message
+    
+    
+    def evaluate_full_dataset(self, dataloader, dataset_name, epoch, labels=None):
+        """
+        Evaluate on the complete dataset and save concatenated data with correct shape
+        FIXED: Now denormalizes data back to original scale before saving
+        """
+        print(f"Evaluating full {dataset_name} dataset...")
+        
+        all_concatenated_data_normalized = []
+        all_concatenated_data_denormalized = []
+        all_mses = []
+        
+        # Get the dataset object to access denormalization parameters
+        dataset_obj = dataloader.dataset
+        
+        with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
-                # Get batch data
                 original_signal = batch[0].to(self.config.device)
                 
-                # Generate predicted signal
+                # Generate predicted signal for this batch
                 result = self.pipeline(
                     original_signal,
                     self.config.prediction_point,
                     batch_size=len(original_signal),
-                    num_inference_steps=self.config.num_train_timesteps,
+                    num_inference_steps=50,
                 )
                 
-                # Extract the predicted signal
                 predicted_signal = result.images
                 
-                # Normalize original signal for comparison
-                original_signal = (original_signal / 2 + 0.5).clamp(0, 1)
-                
-                # Move tensors to CPU for processing with numpy
-                batch_predictions = predicted_signal.cpu().numpy()
-                batch_originals = original_signal.cpu().numpy()
-                
-                # Calculate per-sample MSE for the predicted part
+                # Process each sample in the batch
                 for i in range(len(original_signal)):
-                    pred_part_orig = batch_originals[i, 0, self.config.prediction_point:]
-                    pred_part_pred = batch_predictions[i, 0, self.config.prediction_point:]
-                    mse = np.mean((pred_part_pred - pred_part_orig) ** 2)
+                    # Get original first half (before prediction point) - normalized
+                    first_half_norm = original_signal[i, 0, :self.config.prediction_point].cpu().numpy()
+                    # Get predicted second half (after prediction point) - normalized
+                    second_half_norm = predicted_signal[i, 0, self.config.prediction_point:].cpu().numpy()
+                    # Concatenate normalized data
+                    full_signal_norm = np.concatenate([first_half_norm, second_half_norm])
+                    all_concatenated_data_normalized.append(full_signal_norm)
+                    
+                    # FIXED: Denormalize the full concatenated signal back to original scale
+                    full_signal_denorm = dataset_obj.denormalize_with_min_max(full_signal_norm)
+                    all_concatenated_data_denormalized.append(full_signal_denorm)
+                    
+                    # Calculate MSE for this sample (using normalized data for consistency)
+                    original_second_half = original_signal[i, 0, self.config.prediction_point:].cpu().numpy()
+                    mse = np.mean((second_half_norm - original_second_half) ** 2)
                     all_mses.append(mse)
                 
-                # Store all signals for later analysis
-                all_originals.extend([batch_originals[i, 0, :] for i in range(len(batch_originals))])
-                all_predictions.extend([batch_predictions[i, 0, :] for i in range(len(batch_predictions))])
-                
-                # Store original normalized data for concatenation (before comparison normalization)
-                batch_originals_for_concat = batch[0].cpu().numpy()
-                if batch_idx == 0:
-                    all_originals_for_concat = []
-                
-                all_originals_for_concat.extend([batch_originals_for_concat[i, 0, :] for i in range(len(batch_originals_for_concat))])
-
                 print(f"Processed batch {batch_idx+1}/{len(dataloader)} of {dataset_name} dataset")
-            
-            # Convert to numpy arrays for easier processing
-            all_originals = np.array(all_originals)
-            all_predictions = np.array(all_predictions)
-            all_mses = np.array(all_mses)
-            
-            # Log overall MSE
-            avg_mse = np.mean(all_mses)
-            wandb.log({f'{dataset_name}_full_dataset_mse': avg_mse})
-            
-            # Create MSE distribution plot
-            plt.figure(figsize=(10, 6))
-            plt.hist(all_mses, bins=30)
-            plt.title(f'{dataset_name.capitalize()} - Full Dataset MSE Distribution (Avg: {avg_mse:.4f})')
-            plt.xlabel('MSE')
-            plt.ylabel('Count')
-            plt.savefig(f"{full_eval_dir}/{dataset_name}_full_mse_distribution.png")
-            plt.close()
-            
-            # Create and save concatenated data for full dataset
-            concatenated_full_data = []
-            pred_point = self.config.prediction_point
-            
-            for i in range(len(all_originals_for_concat)):
-                # Get original first half (before prediction point)
-                first_half = all_originals_for_concat[i][:pred_point]
-                # Get predicted second half (after prediction point)
-                second_half = all_predictions[i][pred_point:]
-                # Concatenate
-                full_signal = np.concatenate([first_half, second_half])
-                concatenated_full_data.append(full_signal)
-            
-            # Convert to numpy array
-            concatenated_full_data = np.array(concatenated_full_data)
-            
-            # Save full concatenated dataset as CSV
-            full_csv_filename = f"{full_eval_dir}/full_concatenated_{dataset_name}_data_epoch_{epoch}.csv"
-            
-            with open(full_csv_filename, 'w', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                for sample in concatenated_full_data:
-                    writer.writerow(sample)
-            
-            print(f"Saved full concatenated {dataset_name} data to {full_csv_filename} with shape: {concatenated_full_data.shape}")
-
-            # Sample visualization - plot some random samples
-            num_samples = min(5, len(all_originals))
-            plt.figure(figsize=(15, 4*num_samples))
-            
-            for i in range(num_samples):
-                idx = np.random.randint(0, len(all_originals))
-                plt.subplot(num_samples, 1, i+1)
-                plt.plot(all_originals[idx], 'b-', label='Original')
-                plt.plot(all_predictions[idx], 'g-', label='Predicted')
-                plt.axvline(x=self.config.prediction_point, color='r', linestyle='--', label='Prediction Point')
-                plt.title(f'Sample {idx} (MSE: {all_mses[idx]:.4f})')
-                plt.legend()
-            
-            plt.tight_layout()
-            plt.savefig(f"{full_eval_dir}/{dataset_name}_sample_comparisons.png")
-            plt.close()
-            
-            # If labels are available, create seizure/non-seizure comparisons
-            if labels is not None and len(labels) >= len(all_originals):
-                # Limit labels to the number of processed samples
-                labels = labels[:len(all_originals)]
-                
-                # Separate seizure and non-seizure samples
-                seizure_indices = [i for i, label in enumerate(labels) if label == 1]
-                non_seizure_indices = [i for i, label in enumerate(labels) if label == 0]
-                
-                if len(seizure_indices) > 0 and len(non_seizure_indices) > 0:
-                    # Calculate average MSE for each class
-                    seizure_mse = np.mean([all_mses[i] for i in seizure_indices])
-                    non_seizure_mse = np.mean([all_mses[i] for i in non_seizure_indices])
-                    
-                    wandb.log({
-                        f'{dataset_name}_full_seizure_mse': seizure_mse,
-                        f'{dataset_name}_full_non_seizure_mse': non_seizure_mse
-                    })
-                    
-                    # Create bar chart comparing MSEs
-                    plt.figure(figsize=(10, 6))
-                    plt.bar(['Seizure', 'Non-Seizure'], [seizure_mse, non_seizure_mse])
-                    plt.title(f'{dataset_name.capitalize()} - Full Dataset MSE by Class')
-                    plt.ylabel('Mean Squared Error')
-                    plt.savefig(f"{full_eval_dir}/{dataset_name}_class_mse_comparison.png")
-                    plt.close()
-                    
-                    # Plot all seizure and non-seizure predictions
-                    pred_start = self.config.prediction_point
-                    
-                    # Seizure samples
-                    plt.figure(figsize=(15, 8))
-                    
-                    # Plot individual seizure samples with low opacity
-                    for idx in seizure_indices[:50]:  # Limit to 50 samples for clarity
-                        plt.plot(range(pred_start, len(all_predictions[idx])), 
-                                 all_predictions[idx][pred_start:], 'r-', alpha=0.1)
-                    
-                    # Calculate and plot average
-                    avg_seizure_orig = np.mean([all_originals[i][pred_start:] for i in seizure_indices], axis=0)
-                    avg_seizure_pred = np.mean([all_predictions[i][pred_start:] for i in seizure_indices], axis=0)
-                    
-                    plt.plot(range(pred_start, len(all_predictions[0])), 
-                             avg_seizure_pred, 'r-', linewidth=2, label='Avg Seizure Prediction')
-                    plt.plot(range(pred_start, len(all_originals[0])), 
-                             avg_seizure_orig, 'b-', linewidth=2, label='Avg Seizure Original')
-                    
-                    plt.title(f'{dataset_name.capitalize()} - Full Dataset Seizure Predictions (n={len(seizure_indices)})')
-                    plt.legend()
-                    plt.savefig(f"{full_eval_dir}/{dataset_name}_full_seizure_predictions.png")
-                    plt.close()
-                    
-                    # Non-seizure samples
-                    plt.figure(figsize=(15, 8))
-                    
-                    # Plot individual non-seizure samples with low opacity
-                    for idx in non_seizure_indices[:50]:  # Limit to 50 samples for clarity
-                        plt.plot(range(pred_start, len(all_predictions[idx])), 
-                                 all_predictions[idx][pred_start:], 'g-', alpha=0.1)
-                    
-                    # Calculate and plot average
-                    avg_non_seizure_orig = np.mean([all_originals[i][pred_start:] for i in non_seizure_indices], axis=0)
-                    avg_non_seizure_pred = np.mean([all_predictions[i][pred_start:] for i in non_seizure_indices], axis=0)
-                    
-                    plt.plot(range(pred_start, len(all_predictions[0])), 
-                             avg_non_seizure_pred, 'g-', linewidth=2, label='Avg Non-Seizure Prediction')
-                    plt.plot(range(pred_start, len(all_originals[0])), 
-                             avg_non_seizure_orig, 'b-', linewidth=2, label='Avg Non-Seizure Original')
-                    
-                    plt.title(f'{dataset_name.capitalize()} - Full Dataset Non-Seizure Predictions (n={len(non_seizure_indices)})')
-                    plt.legend()
-                    plt.savefig(f"{full_eval_dir}/{dataset_name}_full_non_seizure_predictions.png")
-                    plt.close()
-                    
-                    # Combined comparison plot
-                    plt.figure(figsize=(15, 8))
-                    
-                    plt.plot(range(pred_start, len(all_predictions[0])), 
-                             avg_seizure_pred, 'r-', linewidth=2, label='Avg Seizure Prediction')
-                    plt.plot(range(pred_start, len(all_originals[0])), 
-                             avg_seizure_orig, 'r--', linewidth=2, label='Avg Seizure Original')
-                    
-                    plt.plot(range(pred_start, len(all_predictions[0])), 
-                             avg_non_seizure_pred, 'g-', linewidth=2, label='Avg Non-Seizure Prediction')
-                    plt.plot(range(pred_start, len(all_originals[0])), 
-                             avg_non_seizure_orig, 'g--', linewidth=2, label='Avg Non-Seizure Original')
-                    
-                    plt.title(f'{dataset_name.capitalize()} - Full Dataset Seizure vs Non-Seizure Comparison')
-                    plt.legend()
-                    plt.savefig(f"{full_eval_dir}/{dataset_name}_full_combined_comparison.png")
-                    plt.close()
-                else:
-                    print(f"Warning: {dataset_name} dataset does not contain both seizure and non-seizure samples")
-            
-            return all_mses
         
-        # 1. Evaluate on training dataset
-        print("Evaluating on full training dataset...")
-        train_mses = evaluate_dataset(self.train_dataloader, "training", self.train_labels)
+        # Convert to numpy arrays
+        all_concatenated_data_normalized = np.array(all_concatenated_data_normalized)
+        all_concatenated_data_denormalized = np.array(all_concatenated_data_denormalized)
+        all_mses = np.array(all_mses)
         
-        # 2. Evaluate on testing dataset
-        print("Evaluating on full testing dataset...")
-        test_mses = evaluate_dataset(self.val_dataloader, "testing", self.test_labels)
+        # Create output directory
+        father_path = f"{self.config.output_dir}/{epoch}"
+        if not os.path.exists(father_path):
+            os.makedirs(father_path)
         
-        # 3. Compare training vs testing performance
-        plt.figure(figsize=(10, 6))
-        plt.boxplot([train_mses, test_mses], labels=['Training', 'Testing'])
-        plt.title('MSE Comparison: Training vs Testing')
-        plt.ylabel('Mean Squared Error')
-        plt.savefig(f"{full_eval_dir}/train_vs_test_mse_boxplot.png")
-        plt.close()
+        # FIXED: Save denormalized (original scale) concatenated dataset as CSV
+        csv_filename = f"{father_path}/concatenated_{dataset_name}_data_epoch_{epoch}.csv"
         
-        print("Full dataset evaluation completed!")
+        with open(csv_filename, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            for sample in all_concatenated_data_denormalized:
+                writer.writerow(sample)
+        
+        print(f"Saved DENORMALIZED concatenated {dataset_name} data to {csv_filename} with shape: {all_concatenated_data_denormalized.shape}")
+        print(f"Data range: {np.min(all_concatenated_data_denormalized):.4f} to {np.max(all_concatenated_data_denormalized):.4f}")
+        
+        # OPTIONAL: Also save normalized version for debugging
+        csv_filename_norm = f"{father_path}/concatenated_{dataset_name}_data_normalized_epoch_{epoch}.csv"
+        with open(csv_filename_norm, 'w', newline='') as csvfile:
+            writer = csv.writer(csvfile)
+            for sample in all_concatenated_data_normalized:
+                writer.writerow(sample)
+        
+        print(f"Also saved normalized version to {csv_filename_norm}")
+        
+        # Log statistics
+        avg_mse = np.mean(all_mses)
+        wandb.log({
+            f'{dataset_name}_full_dataset_mse': avg_mse,
+            f'{dataset_name}_dataset_size': len(all_concatenated_data_denormalized),
+            f'{dataset_name}_data_range_min': float(np.min(all_concatenated_data_denormalized)),
+            f'{dataset_name}_data_range_max': float(np.max(all_concatenated_data_denormalized))
+        })
+        
+        print(f"{dataset_name.capitalize()} dataset - Samples: {len(all_concatenated_data_denormalized)}, Avg MSE: {avg_mse:.6f}")
+        
+        return all_concatenated_data_normalized, all_mses
 
     def train(self):
+        print("Starting enhanced training with fixes...")
+        print(f"Data range: {torch.min(next(iter(self.train_dataloader))[0]):.4f} to {torch.max(next(iter(self.train_dataloader))[0]):.4f}")
+        
+        # Print dataset sizes for verification
+        print(f"Training dataset size: {len(self.train_dataset)}")
+        print(f"Validation dataset size: {len(self.val_dataset)}")
+        print(f"Training batches: {len(self.train_dataloader)}")
+        print(f"Validation batches: {len(self.val_dataloader)}")
+        
         number_iteration = 0
+        best_mse = float('inf')
+        
         for epoch in range(self.config.num_epochs):
+            epoch_losses = []
+            
             for iteration, batch in enumerate(self.train_dataloader):
-                self.train_single_batch(batch, number_iteration)
+                loss = self.train_single_batch(batch, number_iteration)
+                epoch_losses.append(loss)
                 number_iteration += 1
                 
-                # Evaluate periodically with enhanced seizure/non-seizure comparison
-                if (number_iteration >= self.config.eval_begin and 
-                    number_iteration % self.config.eval_interval == 0):
-                    # Run evaluation on full datasets
-                    self.evaluate_full_datasets(number_iteration)
+                # More frequent evaluation during early training
+                eval_interval = self.config.eval_interval if number_iteration > 1000 else 200
+                
+                if (number_iteration >= self.config.get('eval_begin', 500) and 
+                    number_iteration % eval_interval == 0):
+                    
+                    # FIXED: Evaluate on complete datasets, not just single batches
+                    print(f"\n=== Full Dataset Evaluation at iteration {number_iteration} ===")
+                    
+                    # Evaluate full training dataset
+                    train_data, train_mses = self.evaluate_full_dataset(
+                        self.train_dataloader, "train", number_iteration, self.train_labels
+                    )
+                    
+                    # Evaluate full validation dataset  
+                    val_data, val_mses = self.evaluate_full_dataset(
+                        self.val_dataloader, "test", number_iteration, self.test_labels
+                    )
+                    
+                    # Create visualizations for both datasets
+                    self.create_sample_visualizations(train_data, train_mses, "train", number_iteration, self.train_labels)
+                    self.create_sample_visualizations(val_data, val_mses, "test", number_iteration, self.test_labels)
+                    
+                    # Use validation MSE for best model selection
+                    val_avg_mse = np.mean(val_mses)
+                    
+                    # Save best model
+                    if val_avg_mse < best_mse:
+                        best_mse = val_avg_mse
+                        torch.save(self.unet.state_dict(), 
+                                 f"{self.config.output_dir}/best_model.pth")
+                        print(f"New best model saved with validation MSE: {best_mse:.6f}")
+                    
+                    print(f"=== Evaluation Complete ===\n")
+            
+            # Log epoch statistics
+            epoch_avg_loss = np.mean(epoch_losses)
+            print(f"Epoch {epoch}: Avg Loss = {epoch_avg_loss:.6f}")
+            wandb.log({"epoch_avg_loss": epoch_avg_loss, "epoch": epoch})
+        
+        print(f"Training completed! Best validation MSE achieved: {best_mse:.6f}")
+        
+        # Final evaluation on complete datasets
+        print("\n=== Final Complete Dataset Evaluation ===")
+        final_train_data, final_train_mses = self.evaluate_full_dataset(
+            self.train_dataloader, "train_final", "final", self.train_labels
+        )
+        final_val_data, final_val_mses = self.evaluate_full_dataset(
+            self.val_dataloader, "test_final", "final", self.test_labels
+        )
+        
+        # Create final visualizations
+        self.create_sample_visualizations(final_train_data, final_train_mses, "train_final", "final", self.train_labels)
+        self.create_sample_visualizations(final_val_data, final_val_mses, "test_final", "final", self.test_labels)
+        
+        print(f"Final Training Dataset: {final_train_data.shape}")
+        print(f"Final Validation Dataset: {final_val_data.shape}")
+        print(f"Final Training MSE: {np.mean(final_train_mses):.6f}")
+        print(f"Final Validation MSE: {np.mean(final_val_mses):.6f}")
+        print(f"Final Training Data Range: [{np.min(final_train_data):.4f}, {np.max(final_train_data):.4f}]")
+        print(f"Final Validation Data Range: [{np.min(final_val_data):.4f}, {np.max(final_val_data):.4f}]")
