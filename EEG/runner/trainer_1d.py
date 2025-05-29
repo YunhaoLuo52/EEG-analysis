@@ -29,9 +29,14 @@ class EEGDiffTrainner1D:
         self.pipeline = DDIMPipeline1D(unet=self.unet, scheduler=self.noise_scheduler)
         
         # Define normalization function
+        # def normalize_1d(tensor):
+        #     return (tensor - 0.5) / 0.5
         def normalize_1d(tensor):
-            return (tensor - 0.5) / 0.5
-        
+            # Use z-score normalization instead
+            mean = tensor.mean()
+            std = tensor.std()
+            return (tensor - mean) / (std + 1e-8)
+
         self.train_dataset = EEGDiffDR.build(train_dataset)
         self.val_dataset = EEGDiffDR.build(val_dataset)
         self.train_dataset.transform = normalize_1d
@@ -48,7 +53,7 @@ class EEGDiffTrainner1D:
         self.val_dataloader = DataLoader(
             self.val_dataset, 
             batch_size=self.config.eval_batch_size, 
-            shuffle=True
+            shuffle=False
         )
         
         # FIXED: Use AdamW with better parameters
@@ -160,55 +165,37 @@ class EEGDiffTrainner1D:
             return False
         
     def train_single_batch(self, batch, epoch):
+        """FIXED: Train UNet to properly respect conditioning"""
         clean_signals = batch[0].to(self.config.device)
         
-        # IMPROVED: Generate noise that matches signal characteristics
-        signal_mean = clean_signals.mean()
-        signal_std = clean_signals.std()
-
-        noise = torch.randn(clean_signals.shape).to(clean_signals.device)
-        noise = noise * (signal_std * 0.1) + signal_mean  # Much smaller noise scale
+        # Generate noise for entire signal
+        noise = torch.randn(clean_signals.shape, device=clean_signals.device)
         
-        # Sample a random timestep for each example
+        # CRITICAL FIX: Create proper noise target
+        # Conditioning region should have ZERO noise target
+        noise_target = noise.clone()
+        noise_target[:, :, :self.config.prediction_point] = 0.0  # Zero for conditioning
+        
+        # Sample timesteps
         timesteps = torch.randint(
-            0, 
-            self.noise_scheduler.config.num_train_timesteps,
-            (clean_signals.shape[0],),
-            device=clean_signals.device
+            0, self.noise_scheduler.config.num_train_timesteps,
+            (clean_signals.shape[0],), device=clean_signals.device
         ).long()
         
-        # FIXED: Add noise to the entire signal first, then condition
+        # Add noise to entire signal
         noisy_signals = self.noise_scheduler.add_noise(clean_signals, noise, timesteps)
         
-        # Apply conditioning after noise addition
-        # Keep the conditioning region from the original clean signal
+        # Apply conditioning - keep conditioning region clean
         noisy_signals[:, :, :self.config.prediction_point] = clean_signals[:, :, :self.config.prediction_point]
         
-        # Predict the noise residual
+        # UNet prediction
         noise_pred = self.unet(noisy_signals, timesteps).sample
         
-        # FIXED: Compute loss with proper weighting
-        # Loss on full signal with higher weight on prediction region
-        prediction_loss = F.mse_loss(
-            noise_pred[:, :, self.config.prediction_point:],
-            noise[:, :, self.config.prediction_point:]
-        )
+        # FIXED LOSS: Train on entire signal with proper targets
+        loss = F.mse_loss(noise_pred, noise_target)
         
-        # Optional: Add small loss on conditioning region to maintain consistency
-        conditioning_loss = F.mse_loss(
-            noise_pred[:, :, :self.config.prediction_point],
-            noise[:, :, :self.config.prediction_point]
-        )
-        
-        # Weighted combination - focus on prediction region
-        loss = prediction_loss + 0.1 * conditioning_loss
-        
-        # FIXED: Gradient clipping before step
         loss.backward()
-        
-        # Clip gradients to prevent explosion
         torch.nn.utils.clip_grad_norm_(self.unet.parameters(), max_norm=1.0)
-        
         self.optimizer.step()
         self.lr_scheduler.step()
         self.optimizer.zero_grad()
@@ -217,19 +204,96 @@ class EEGDiffTrainner1D:
         logs = {
             "epoch": (epoch // len(self.train_dataloader)),
             "iteration": epoch,
-            "total_loss": loss.detach().item(),
-            "prediction_loss": prediction_loss.detach().item(),
-            "conditioning_loss": conditioning_loss.detach().item(),
+            "training_loss": loss.detach().item(),
             "lr": self.lr_scheduler.get_last_lr()[0]
         }
         
         # Print progress
-        if epoch % 100 == 0 or epoch < 50:  # More frequent logging at start
+        if epoch % 100 == 0 or epoch < 50:
             print(", ".join([key + ": " + str(round(value, 6)) for key, value in logs.items()]))
         
         wandb.log(logs)
         
         return loss.item()
+
+
+    # This preserves EEG characteristics better than simple MSE
+    def train_single_batch_advanced_loss(self, batch, epoch):
+        """Advanced training with EEG-specific loss for classification quality"""
+        clean_signals = batch[0].to(self.config.device)
+        
+        # Same noise setup as before
+        noise = torch.randn(clean_signals.shape, device=clean_signals.device)
+        noise_target = noise.clone()
+        noise_target[:, :, :self.config.prediction_point] = 0.0
+        
+        timesteps = torch.randint(0, self.noise_scheduler.config.num_train_timesteps,
+                                (clean_signals.shape[0],), device=clean_signals.device).long()
+        
+        noisy_signals = self.noise_scheduler.add_noise(clean_signals, noise, timesteps)
+        noisy_signals[:, :, :self.config.prediction_point] = clean_signals[:, :, :self.config.prediction_point]
+        
+        noise_pred = self.unet(noisy_signals, timesteps).sample
+        
+        # ADVANCED LOSS COMPUTATION
+        # 1. Base MSE loss (noise prediction)
+        mse_loss = F.mse_loss(noise_pred, noise_target)
+        
+        # 2. Frequency preservation loss
+        # Predict clean signal from noise prediction
+        predicted_clean = noisy_signals - noise_pred
+        target_clean = clean_signals
+        
+        # Focus on prediction region for frequency loss
+        pred_region = predicted_clean[:, :, self.config.prediction_point:]
+        target_region = target_clean[:, :, self.config.prediction_point:]
+        
+        # FFT-based frequency loss
+        pred_fft = torch.fft.fft(pred_region, dim=-1)
+        target_fft = torch.fft.fft(target_region, dim=-1)
+        freq_loss = F.mse_loss(torch.abs(pred_fft), torch.abs(target_fft))
+        
+        # 3. Gradient loss (preserves signal morphology)
+        pred_grad = pred_region[:, :, 1:] - pred_region[:, :, :-1]
+        target_grad = target_region[:, :, 1:] - target_region[:, :, :-1]
+        grad_loss = F.mse_loss(pred_grad, target_grad)
+        
+        # 4. Amplitude preservation loss
+        pred_std = torch.std(pred_region, dim=-1, keepdim=True)
+        target_std = torch.std(target_region, dim=-1, keepdim=True)
+        amplitude_loss = F.mse_loss(pred_std, target_std)
+        
+        # Combined loss with weights
+        total_loss = (mse_loss + 
+                    0.3 * freq_loss + 
+                    0.2 * grad_loss + 
+                    0.1 * amplitude_loss)
+        
+        total_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.unet.parameters(), max_norm=0.5)  # Lower clip for stability
+        self.optimizer.step()
+        self.lr_scheduler.step()
+        self.optimizer.zero_grad()
+        
+        # Enhanced logging
+        logs = {
+            "epoch": (epoch // len(self.train_dataloader)),
+            "iteration": epoch,
+            "total_loss": total_loss.detach().item(),
+            "mse_loss": mse_loss.detach().item(),
+            "freq_loss": freq_loss.detach().item(),
+            "grad_loss": grad_loss.detach().item(),
+            "amplitude_loss": amplitude_loss.detach().item(),
+            "lr": self.lr_scheduler.get_last_lr()[0]
+        }
+        
+        if epoch % 100 == 0:
+            print(f"Step {epoch}: Total={total_loss:.6f}, MSE={mse_loss:.6f}, Freq={freq_loss:.6f}")
+        
+        wandb.log(logs)
+        return total_loss.item()
+
+
 
     def create_sample_visualizations(self, concatenated_data_norm, mses, dataset_name, epoch, labels=None):
         """Create sample visualizations for the evaluation using denormalized data"""
@@ -262,7 +326,6 @@ class EEGDiffTrainner1D:
             plt.ylabel('EEG Signal (Normalized [0,1])')
             plt.legend()
             plt.grid(True, alpha=0.3)
-            plt.ylim(-0.1, 1.1)
             plt.savefig(f"{samples_dir}/sample_{i+1}_concatenated.png", dpi=150, bbox_inches='tight')
             plt.close()
         
@@ -393,82 +456,154 @@ class EEGDiffTrainner1D:
     def train(self):
         print("Starting enhanced training with fixes...")
         print(f"Data range: {torch.min(next(iter(self.train_dataloader))[0]):.4f} to {torch.max(next(iter(self.train_dataloader))[0]):.4f}")
-        
+    
         # Print dataset sizes for verification
         print(f"Training dataset size: {len(self.train_dataset)}")
         print(f"Validation dataset size: {len(self.val_dataset)}")
         print(f"Training batches: {len(self.train_dataloader)}")
         print(f"Validation batches: {len(self.val_dataloader)}")
-        
+
         number_iteration = 0
         best_mse = float('inf')
-        
+
+        # FIXED: Track both training losses and evaluation MSEs separately
+        training_losses_history = []
+        eval_mse_history = []
+
         for epoch in range(self.config.num_epochs):
             epoch_losses = []
-            
+
             for iteration, batch in enumerate(self.train_dataloader):
-                loss = self.train_single_batch(batch, number_iteration)
-                epoch_losses.append(loss)
+                # Get training loss (noise prediction loss)
+                # training_loss = self.train_single_batch(batch, number_iteration)
+                training_loss = self.train_single_batch_advanced_loss(batch, number_iteration)
+                epoch_losses.append(training_loss)
+                training_losses_history.append(training_loss)
                 number_iteration += 1
-                
+
                 # More frequent evaluation during early training
                 eval_interval = self.config.eval_interval if number_iteration > 1000 else 200
-                
+
                 if (number_iteration >= self.config.get('eval_begin', 500) and 
                     number_iteration % eval_interval == 0):
-                    
-                    # FIXED: Evaluate on complete datasets, not just single batches
+
                     print(f"\n=== Full Dataset Evaluation at iteration {number_iteration} ===")
-                    
+
+                    # PRESERVE: Your original visualization workflow
                     # Evaluate full training dataset
                     train_data, train_mses = self.evaluate_full_dataset(
                         self.train_dataloader, "train", number_iteration, self.train_labels
                     )
-                    
+
                     # Evaluate full validation dataset  
                     val_data, val_mses = self.evaluate_full_dataset(
                         self.val_dataloader, "test", number_iteration, self.test_labels
                     )
-                    
-                    # Create visualizations for both datasets
+
+                    # PRESERVE: Create visualizations for both datasets
                     self.create_sample_visualizations(train_data, train_mses, "train", number_iteration, self.train_labels)
                     self.create_sample_visualizations(val_data, val_mses, "test", number_iteration, self.test_labels)
-                    
-                    # Use validation MSE for best model selection
-                    val_avg_mse = np.mean(val_mses)
-                    
-                    # Save best model
-                    if val_avg_mse < best_mse:
-                        best_mse = val_avg_mse
+
+                    # FIXED: Calculate and track the metrics correctly
+                    train_signal_mse = np.mean(train_mses)
+                    val_signal_mse = np.mean(val_mses)
+                    recent_training_loss = np.mean(epoch_losses[-10:]) if len(epoch_losses) >= 10 else np.mean(epoch_losses)
+
+                    # Store evaluation MSE history for trend analysis
+                    eval_mse_history.append(val_signal_mse)
+
+                    # ENHANCED: Log both training loss and evaluation MSE separately
+                    wandb.log({
+                        # Training metrics (noise prediction)
+                        "training_noise_loss": recent_training_loss,
+                        "training_loss_trend": np.mean(training_losses_history[-100:]) if len(training_losses_history) >= 100 else  recent_training_loss,
+
+                        # Evaluation metrics (signal completion - what we actually care about)
+                        "train_signal_mse": train_signal_mse,
+                        "val_signal_mse": val_signal_mse,
+                        "signal_mse_gap": val_signal_mse - train_signal_mse,
+
+                        # Iteration tracking
+                        "iteration": number_iteration,
+                        "epoch_progress": epoch + (iteration / len(self.train_dataloader))
+                    })
+
+                    # FIXED: Early stopping based on signal MSE, not training loss
+                    if len(eval_mse_history) >= 3:
+                        # Check trend over last 3 evaluations
+                        recent_mse_trend = np.mean(eval_mse_history[-2:]) - np.mean(eval_mse_history[-3:-1])
+
+                        if recent_mse_trend > self.config.get('min_delta', 0.001):
+                            self.patience_counter += 1
+                            print(f"⚠️  Signal MSE not improving (trend: +{recent_mse_trend:.6f}). Patience: {self. patience_counter}/{self.early_stopping_patience}")
+                        else:
+                            self.patience_counter = 0
+                            print(f"✅ Signal MSE improved (trend: {recent_mse_trend:.6f})")
+
+                        # Early stopping check
+                        if self.patience_counter >= self.early_stopping_patience:
+                            print(f"🛑 Early stopping triggered! Signal MSE hasn't improved for {self.early_stopping_patience}  evaluations")
+                            print(f"Best validation MSE achieved: {best_mse:.6f}")
+                            return  # Exit training early
+
+                    # PRESERVE: Save best model based on validation signal MSE
+                    if val_signal_mse < best_mse:
+                        best_mse = val_signal_mse
                         torch.save(self.unet.state_dict(), 
                                  f"{self.config.output_dir}/best_model.pth")
-                        print(f"New best model saved with validation MSE: {best_mse:.6f}")
-                    
+                        print(f"🎯 New best model saved with validation Signal MSE: {best_mse:.6f}")
+
+                    # ENHANCED: Print comprehensive progress
+                    print(f"📊 Metrics Summary:")
+                    print(f"   Training Loss (noise): {recent_training_loss:.6f}")
+                    print(f"   Train Signal MSE: {train_signal_mse:.6f}")
+                    print(f"   Val Signal MSE: {val_signal_mse:.6f}")
+                    print(f"   MSE Gap: {val_signal_mse - train_signal_mse:.6f}")
+                    print(f"   Best Val MSE: {best_mse:.6f}")
                     print(f"=== Evaluation Complete ===\n")
-            
+
             # Log epoch statistics
             epoch_avg_loss = np.mean(epoch_losses)
-            print(f"Epoch {epoch}: Avg Loss = {epoch_avg_loss:.6f}")
-            wandb.log({"epoch_avg_loss": epoch_avg_loss, "epoch": epoch})
-        
-        print(f"Training completed! Best validation MSE achieved: {best_mse:.6f}")
-        
-        # Final evaluation on complete datasets
+            print(f"Epoch {epoch}: Avg Training Loss = {epoch_avg_loss:.6f}")
+            wandb.log({"epoch_avg_training_loss": epoch_avg_loss, "epoch": epoch})
+
+        print(f"Training completed! Best validation Signal MSE achieved: {best_mse:.6f}")
+
+        # PRESERVE: Final evaluation on complete datasets with visualizations
         print("\n=== Final Complete Dataset Evaluation ===")
         final_train_data, final_train_mses = self.evaluate_full_dataset(
-            self.train_dataloader, "train_final", "final", self.train_labels
+           self.train_dataloader, "train_final", "final", self.train_labels
         )
         final_val_data, final_val_mses = self.evaluate_full_dataset(
-            self.val_dataloader, "test_final", "final", self.test_labels
+           self.val_dataloader, "test_final", "final", self.test_labels
         )
-        
-        # Create final visualizations
+
+        # PRESERVE: Create final visualizations
         self.create_sample_visualizations(final_train_data, final_train_mses, "train_final", "final", self.train_labels)
         self.create_sample_visualizations(final_val_data, final_val_mses, "test_final", "final", self.test_labels)
-        
-        print(f"Final Training Dataset: {final_train_data.shape}")
-        print(f"Final Validation Dataset: {final_val_data.shape}")
-        print(f"Final Training MSE: {np.mean(final_train_mses):.6f}")
-        print(f"Final Validation MSE: {np.mean(final_val_mses):.6f}")
-        print(f"Final Training Data Range: [{np.min(final_train_data):.4f}, {np.max(final_train_data):.4f}]")
-        print(f"Final Validation Data Range: [{np.min(final_val_data):.4f}, {np.max(final_val_data):.4f}]")
+    
+        # ENHANCED: Final comprehensive summary
+        final_train_mse = np.mean(final_train_mses)
+        final_val_mse = np.mean(final_val_mses)
+
+        print(f"📈 Final Results Summary:")
+        print(f"   Final Training Dataset: {final_train_data.shape}")
+        print(f"   Final Validation Dataset: {final_val_data.shape}")
+        print(f"   Final Training Signal MSE: {final_train_mse:.6f}")
+        print(f"   Final Validation Signal MSE: {final_val_mse:.6f}")
+        print(f"   Final MSE Gap: {final_val_mse - final_train_mse:.6f}")
+        print(f"   Best Validation MSE During Training: {best_mse:.6f}")
+        print(f"   Final Training Data Range: [{np.min(final_train_data):.4f}, {np.max(final_train_data):.4f}]")
+        print(f"   Final Validation Data Range: [{np.min(final_val_data):.4f}, {np.max(final_val_data):.4f}]")
+
+        # Log final metrics
+        wandb.log({
+            "final_train_signal_mse": final_train_mse,
+            "final_val_signal_mse": final_val_mse,
+            "final_mse_gap": final_val_mse - final_train_mse,
+            "best_val_mse_achieved": best_mse,
+            "training_completed": True
+        })
+
+
+

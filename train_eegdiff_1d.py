@@ -2,6 +2,37 @@ from EEG import EEGDiffTrainner1D, EEGDiffMR
 from mmengine import Config
 import wandb
 import os
+import random
+import numpy as np
+import torch
+
+def set_reproducible_seeds(seed=42):
+    """Set all seeds for reproducible results"""
+    print(f"🎲 Setting seeds to {seed} for reproducible results...")
+    
+    # Python random
+    random.seed(seed)
+    
+    # Numpy random  
+    np.random.seed(seed)
+    
+    # PyTorch random
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    
+    # PyTorch deterministic operations
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
+    # Environment variable
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    print("✅ All seeds set for reproducible training")
+
+
+# Add this line right after your imports, before building the trainer:
+set_reproducible_seeds(seed=42)
 
 # Create necessary directories
 os.makedirs("C:/Github/EEG-Mouse/outputs/1d_model", exist_ok=True)
