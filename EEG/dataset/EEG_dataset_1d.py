@@ -20,15 +20,25 @@ class EEGDataset1D(Dataset):
         
         # Load data from CSV - assuming no headers and each row is a sample
         data = pd.read_csv(csv_path, header=None)
-        self.data = data.values
+        self.data = data.values.astype(np.float32)
         
-        # Calculate normalization values
-        self.normalized_data, \
-        self.max_value, \
-        self.min_value = self.normalize_with_min_max(self.data)
+        # CRITICAL FIX: Use min-max normalization to [0, 1] range
+        # This is more stable than z-score for diffusion models
+        self.max_value = np.max(self.data)
+        self.min_value = np.min(self.data)
         
-        # Calculate effective number of segments
-        self.num_samples = self.data.shape[0]  # Number of samples/rows in CSV
+        print(f"Dataset loaded: {self.data.shape}")
+        print(f"Original data range: [{self.min_value:.4f}, {self.max_value:.4f}]")
+        
+        # Normalize to [0, 1] range - this is critical for stable diffusion training
+        if self.max_value != self.min_value:
+            self.normalized_data = (self.data - self.min_value) / (self.max_value - self.min_value)
+        else:
+            self.normalized_data = np.zeros_like(self.data)
+        
+        print(f"Normalized data range: [{np.min(self.normalized_data):.4f}, {np.max(self.normalized_data):.4f}]")
+        
+        self.num_samples = self.data.shape[0]
 
     def __len__(self):
         return self.num_samples
@@ -48,39 +58,6 @@ class EEGDataset1D(Dataset):
             
         return (sequence,)
     
-    def apply_augmentation(self, sequence):
-        """
-        Apply various augmentation techniques suitable for EEG signals
-        """
-        # Choose random augmentation
-        aug_type = np.random.choice(['noise', 'scale', 'shift', 'smooth'])
-        
-        if aug_type == 'noise':
-            # Add small amount of gaussian noise
-            noise_level = 0.01
-            noise = np.random.normal(0, noise_level, sequence.shape)
-            sequence = sequence + noise
-            
-        elif aug_type == 'scale':
-            # Scale amplitude slightly
-            scale_factor = np.random.uniform(0.9, 1.1)
-            sequence = sequence * scale_factor
-            
-        elif aug_type == 'shift':
-            # Small time shift (circular shift)
-            shift_amount = np.random.randint(-10, 11)
-            sequence = np.roll(sequence, shift_amount)
-            
-        elif aug_type == 'smooth':
-            # Apply light smoothing
-            kernel_size = 3
-            kernel = np.ones(kernel_size) / kernel_size
-            sequence = np.convolve(sequence, kernel, mode='same')
-        
-        # Ensure values stay in normalized range
-        sequence = np.clip(sequence, 0, 1)
-        
-        return sequence
     
     def normalize_with_min_max(self, data):
         max_values = np.max(data)
