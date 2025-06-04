@@ -8,43 +8,41 @@ from ..registry import EEGDiffDR
 class EEGDataset1D(Dataset):
     def __init__(self, csv_path, sequence_length=2560):
         """
-        Args:
-            csv_path (str): Path to the CSV file containing the dataset.
-            sequence_length (int): The length of each sequence to be processed.
-            step_size (int): Step size for sliding window, if using overlapping segments.
+        Z-SCORE NORMALIZATION: Consistent implementation
         """
-        self.transform = None
         self.csv_path = csv_path
         self.sequence_length = sequence_length
-        #self.step_size = step_size
         
-        # Load data from CSV - assuming no headers and each row is a sample
+        # Load data
         data = pd.read_csv(csv_path, header=None)
         self.data = data.values.astype(np.float32)
         
-        # CRITICAL FIX: Use min-max normalization to [0, 1] range
-        # This is more stable than z-score for diffusion models
-        self.max_value = np.max(self.data)
-        self.min_value = np.min(self.data)
-        
         print(f"Dataset loaded: {self.data.shape}")
-        print(f"Original data range: [{self.min_value:.4f}, {self.max_value:.4f}]")
+        print(f"Original data range: [{np.min(self.data):.4f}, {np.max(self.data):.4f}]")
         
-        # Normalize to [0, 1] range - this is critical for stable diffusion training
-        if self.max_value != self.min_value:
-            self.normalized_data = (self.data - self.min_value) / (self.max_value - self.min_value)
-        else:
-            self.normalized_data = np.zeros_like(self.data)
+        # Z-SCORE NORMALIZATION
+        # Calculate global statistics across all samples
+        self.mean = np.mean(self.data)
+        self.std = np.std(self.data)
+        
+        print(f"Global statistics - Mean: {self.mean:.4f}, Std: {self.std:.4f}")
+        
+        # Apply z-score normalization
+        self.normalized_data = (self.data - self.mean) / (self.std + 1e-8)
         
         print(f"Normalized data range: [{np.min(self.normalized_data):.4f}, {np.max(self.normalized_data):.4f}]")
+        print(f"Normalized mean: {np.mean(self.normalized_data):.6f}, std: {np.std(self.normalized_data):.6f}")
         
         self.num_samples = self.data.shape[0]
+        
+        # Store normalization method for consistency
+        self.norm_method = "z_score"
 
     def __len__(self):
         return self.num_samples
     
     def __getitem__(self, index):
-        # Get the entire sample as a sequence
+        # Get normalized sequence
         sequence = self.normalized_data[index, :]
         
         # Convert to tensor
@@ -53,164 +51,94 @@ class EEGDataset1D(Dataset):
         # Reshape to [channels, sequence_length]
         sequence = sequence.reshape(1, -1)  # 1 channel
         
-        if self.transform:
-            sequence = self.transform(sequence)
-            
+        # NO ADDITIONAL TRANSFORM - normalization is already done
         return (sequence,)
     
-    
-    def normalize_with_min_max(self, data):
-        max_values = np.max(data)
-        min_values = np.min(data)
-        
-        normalized_data = np.zeros_like(data, dtype=float)
-        if max_values == min_values:
-            normalized_data[:] = 0.0
-        else:
-            normalized_data = (data - min_values) / (max_values - min_values)
-            
-        return normalized_data, max_values, min_values
-    
-    def denormalize_with_min_max(self, normalized_data):
-        denormalized_data = normalized_data * (self.max_value - self.min_value) + self.min_value
-        return denormalized_data
+    def denormalize(self, normalized_data):
+        """
+        Reverse z-score normalization
+        """
+        denormalized = normalized_data * self.std + self.mean
+        return denormalized
 
 
 @EEGDiffDR.register_module()
 class PredictionEEGDataset1D(Dataset):
     def __init__(self, csv_path, sequence_length=2560, prediction_length=1280):
         """
-        Dataset for long-term prediction tasks.
-        
-        Args:
-            csv_path (str): Path to the CSV file containing the dataset.
-            sequence_length (int): Total length of sequence.
-            prediction_length (int): Length of the prediction window.
-            step_size (int): Step size for sliding window.
+        Dataset for long-term prediction with z-score normalization
         """
-        self.transform = None
         self.csv_path = csv_path
         self.sequence_length = sequence_length
         self.prediction_length = prediction_length
-        #self.step_size = step_size
         
-        # Load data from CSV - assuming no headers and each row is a sample
+        # Load data
         data = pd.read_csv(csv_path, header=None)
-        self.data = data.values
+        self.data = data.values.astype(np.float32)
         
-        # Calculate normalization values
-        self.normalized_data, \
-        self.max_value, \
-        self.min_value = self.normalize_with_min_max(self.data)
+        # Z-SCORE NORMALIZATION
+        self.mean = np.mean(self.data)
+        self.std = np.std(self.data)
         
-        # Calculate effective number of segments
-        self.num_samples = self.data.shape[0]  # Number of samples/rows in CSV
+        # Apply z-score normalization
+        self.normalized_data = (self.data - self.mean) / (self.std + 1e-8)
+        
+        self.num_samples = self.data.shape[0]
+        self.norm_method = "z_score"
 
     def __len__(self):
         return self.num_samples
     
     def __getitem__(self, index):
-        # Get the entire sample as a sequence
         sequence = self.normalized_data[index, :]
-        
-        # Convert to tensor
         sequence = torch.from_numpy(sequence).float()
-        
-        # Reshape to [channels, sequence_length]
-        sequence = sequence.reshape(1, -1)  # 1 channel
-        
-        if self.transform:
-            sequence = self.transform(sequence)
-            
+        sequence = sequence.reshape(1, -1)
         return (sequence,)
     
-    def normalize_with_min_max(self, data):
-        max_values = np.max(data)
-        min_values = np.min(data)
-        
-        normalized_data = np.zeros_like(data, dtype=float)
-        if max_values == min_values:
-            normalized_data[:] = 0.0
-        else:
-            normalized_data = (data - min_values) / (max_values - min_values)
-            
-        return normalized_data, max_values, min_values
-    
-    def denormalize_with_min_max(self, normalized_data):
-        denormalized_data = normalized_data * (self.max_value - self.min_value) + self.min_value
-        return denormalized_data
+    def denormalize(self, normalized_data):
+        """
+        Reverse z-score normalization
+        """
+        denormalized = normalized_data * self.std + self.mean
+        return denormalized
 
 
 @EEGDiffDR.register_module()
 class EvaluationDataset1D(Dataset):
     def __init__(self, csv_path, window_size=2560, prediction_point=1280):
         """
-        Dataset for evaluation with sliding window approach.
-        
-        Args:
-            csv_path (str): Path to the CSV file containing the dataset.
-            window_size (int): Size of the window for each data item.
-            prediction_point (int): Number of points to predict.
-            step_size (int): Step size to move the window.
+        Evaluation dataset with z-score normalization
         """
-        self.transform = None
         self.csv_path = csv_path
         self.window_size = window_size
         self.prediction_point = prediction_point
-        #self.step_size = step_size
         
-        # Load data from CSV - assuming no headers and each row is a sample
+        # Load data
         data = pd.read_csv(csv_path, header=None)
-        self.data = data.values
+        self.data = data.values.astype(np.float32)
         
-        # Calculate normalization values
-        self.normalized_data, \
-        self.max_value, \
-        self.min_value = self.normalize_with_min_max(self.data)
+        # Z-SCORE NORMALIZATION
+        self.mean = np.mean(self.data)
+        self.std = np.std(self.data)
         
-        # Calculate effective number of segments per sample
-        self.segments_per_sample = (self.data.shape[1] - self.window_size) // self.step_size + 1
+        # Apply z-score normalization
+        self.normalized_data = (self.data - self.mean) / (self.std + 1e-8)
         
-        # Total number of segments across all samples
-        self.total_segments = self.data.shape[0] * self.segments_per_sample
+        self.num_samples = self.data.shape[0]
+        self.norm_method = "z_score"
 
     def __len__(self):
-        return self.total_segments
+        return self.num_samples
     
     def __getitem__(self, index):
-        # Calculate which sample and which segment within that sample
-        sample_idx = index // self.segments_per_sample
-        segment_idx = index % self.segments_per_sample
-        
-        # Calculate start position
-        start_pos = segment_idx * self.step_size
-        
-        # Extract the window from the sample
-        window = self.normalized_data[sample_idx, start_pos:start_pos + self.window_size]
-        
-        # Convert to tensor
+        window = self.normalized_data[index, :]
         window = torch.from_numpy(window).float()
-        
-        # Reshape to [channels, sequence_length]
-        window = window.reshape(1, -1)  # 1 channel
-        
-        if self.transform:
-            window = self.transform(window)
-            
+        window = window.reshape(1, -1)
         return (window,)
     
-    def normalize_with_min_max(self, data):
-        max_values = np.max(data)
-        min_values = np.min(data)
-        
-        normalized_data = np.zeros_like(data, dtype=float)
-        if max_values == min_values:
-            normalized_data[:] = 0.0
-        else:
-            normalized_data = (data - min_values) / (max_values - min_values)
-            
-        return normalized_data, max_values, min_values
-    
-    def denormalize_with_min_max(self, normalized_data):
-        denormalized_data = normalized_data * (self.max_value - self.min_value) + self.min_value
-        return denormalized_data
+    def denormalize(self, normalized_data):
+        """
+        Reverse z-score normalization
+        """
+        denormalized = normalized_data * self.std + self.mean
+        return denormalized
