@@ -4,6 +4,55 @@ import numpy as np
 from diffusers.schedulers import DDIMScheduler
 from diffusers.utils.torch_utils import randn_tensor
 from diffusers.pipelines import DiffusionPipeline, ImagePipelineOutput
+from scipy.signal import butter, sosfilt
+
+def band_limited_noise(shape, fs=256, fmin=6, fmax=8, device='cpu', dtype=torch.float32):
+    """
+    Generate band-limited noise in a specific frequency band (e.g., around 7 Hz).
+    shape: (batch, channels, length)
+    fs: sampling frequency
+    fmin/fmax: min and max frequency of noise band (Hz)
+    """
+    batch, channels, length = shape
+    noise = np.random.randn(batch * channels, length)
+    
+    # Butterworth bandpass filter
+    sos = butter(N=4, Wn=[fmin, fmax], btype='bandpass', fs=fs, output='sos')
+    filtered = np.array([sosfilt(sos, x) for x in noise])
+    
+    filtered = filtered.reshape(batch, channels, length)
+    return torch.tensor(filtered, dtype=dtype, device=device)
+
+def pink_noise(shape):
+    """
+    Generate pink noise using 1/f scaling in frequency domain.
+    """
+    batch, channels, time = shape
+    uneven = time % 2
+    X = np.random.randn(batch * channels, time + uneven)
+    X_fft = np.fft.rfft(X)
+    S = np.arange(1, X_fft.shape[1] + 1)
+    S = np.sqrt(1.0 / S)
+    X_fft *= S
+    pink = np.fft.irfft(X_fft)
+    return torch.tensor(pink[:, :time].reshape(batch, channels, time), dtype=torch.float32)
+
+
+def generate_eeg_like_noise(shape, label_tensor, fs=256, device='cpu', dtype=torch.float32):
+    """
+    Generate EEG-like noise with band-limited + pink noise. Slightly stronger if seizure.
+    label_tensor: shape (batch,) with values 0 (non-seizure) or 1 (seizure)
+    """
+    batch, channels, length = shape
+    base_bl = band_limited_noise(shape, fs=fs, fmin=4, fmax=12, device=device, dtype=dtype)
+    base_pink = pink_noise(shape).to(device=device, dtype=dtype)
+
+    label_tensor = torch.as_tensor(label_tensor, dtype=torch.float32, device=device).reshape(-1, 1, 1)
+
+    # More noise for seizure (helps model learn to denoise seizure signals carefully)
+    noise = base_bl + 0.05 * base_pink + 0.1 * label_tensor * torch.randn_like(base_bl)
+    return noise
+
 
 class DDIMPipeline1D(DiffusionPipeline):
     """
@@ -26,6 +75,7 @@ class DDIMPipeline1D(DiffusionPipeline):
             num_inference_steps: int = 1000,
             use_clipped_model_output: Optional[bool] = None,
             return_dict: bool = True,
+            initial_labels=None,
     ) -> Union[ImagePipelineOutput, Tuple]:
         """
         Generate EEG signals with z-score normalized data
@@ -35,8 +85,8 @@ class DDIMPipeline1D(DiffusionPipeline):
         else:
             signal_shape = (batch_size, self.unet.config.in_channels, *self.unet.config.sample_size)
 
-        # Start with standard normal noise (appropriate for z-score data)
-        signal = randn_tensor(signal_shape, generator=generator, device=self.device, dtype=self.unet.dtype)
+        # Custom noise
+        signal = generate_eeg_like_noise(signal_shape, label_tensor=initial_labels, fs=256, device=self.device, dtype=self.unet.dtype)
         
         # Get conditioning part
         conditioning_part = initial_signal[:, :, :prediction_point]
@@ -105,15 +155,16 @@ class DDIMPipeline1D(DiffusionPipeline):
             eta: float = 0.0,
             num_inference_steps: int = 100,
             use_clipped_model_output: Optional[bool] = None,
+            initial_labels=None,
     ) -> torch.FloatTensor:
         """
         Simplified prediction method for z-score normalized data
         """
         conditioning_part = initial_signal[:, :, :prediction_point]
 
-        # Start with standard normal noise
-        noise = randn_tensor(initial_signal.shape, generator=generator, 
-                    device=self.device, dtype=self.unet.dtype)
+        # Custom noise
+        noise = generate_eeg_like_noise(initial_signal.shape, label_tensor=initial_labels, fs=256, device=self.device, dtype=self.unet.dtype)
+
 
         signal = noise.clone()
         signal[:, :, :prediction_point] = conditioning_part

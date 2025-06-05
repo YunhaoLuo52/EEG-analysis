@@ -16,7 +16,7 @@ train_config = dict(
 
     # EEG-specific parameters
     prediction_point=640,   # Start prediction from 50% of signal
-    num_train_timesteps=1000, #number of steps in evaluation...
+    num_train_timesteps=200, #number of steps in evaluation...
     num_inference_steps=50,
     num_epochs=10,
     max_train_steps=8000,
