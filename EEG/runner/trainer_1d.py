@@ -327,8 +327,10 @@ class EEGDiffTrainner1D:
         # Get original dataset for denormalization
         if dataset_name.startswith("train"):
             original_dataset = self.train_dataset_original
+            initial_labels = self.train_labels
         else:
             original_dataset = self.val_dataset_original
+            initial_labels = self.test_labels
         
         total_samples = len(original_dataset.data)
         print(f"Processing {total_samples} samples from {dataset_name} dataset")
@@ -338,6 +340,14 @@ class EEGDiffTrainner1D:
         with torch.no_grad():
             for batch_idx, batch in enumerate(dataloader):
                 normalized_signal = batch[0].to(self.config.device)
+
+                # Extract corresponding batch of labels
+                start_idx = batch_idx * dataloader.batch_size
+                end_idx = start_idx + len(normalized_signal)
+                batch_labels = initial_labels[start_idx:end_idx]
+
+                # Make sure it's a torch.Tensor
+                batch_labels = torch.tensor(batch_labels, dtype=torch.float32, device=self.config.device)
                 
                 # Generate prediction
                 result = self.pipeline(
@@ -345,6 +355,7 @@ class EEGDiffTrainner1D:
                     self.config.prediction_point,
                     batch_size=len(normalized_signal),
                     num_inference_steps=self.config.num_inference_steps,
+                    initial_labels=batch_labels,
                 )
                 
                 predicted_signal = result.images
